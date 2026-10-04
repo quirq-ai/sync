@@ -13,6 +13,8 @@
                                                    nothing behind, unless it matches its pin.
     qqsync verify SECTION NAME PATH [--platform P] [--manifest PATH]
                                                    check a fetched file or checkout against its pin.
+    qqsync guard [ROOT]                            fail if any file under ROOT parses repo.toml
+                                                   outside qqsync (a presubmit for every repo).
 
 PATH defaults to infra/repo.toml. Exit 1 on any problem, with every problem printed.
 """
@@ -24,6 +26,7 @@ import sys
 
 from qqsync import __version__
 from qqsync.errors import ManifestError
+from qqsync.guard import scan
 from qqsync.manifest import DEFAULT_PATH, PIN_SECTIONS, Manifest
 from qqsync.pins import PinError, fetch, find_pin, iter_pins, placeholders, verify_checkout, verify_file
 
@@ -80,6 +83,15 @@ def _verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _guard(args: argparse.Namespace) -> int:
+    findings = scan(args.root, args.allow or [])
+    for finding in findings:
+        print(finding, file=sys.stderr)
+    if not findings:
+        print(f"{args.root}: PASS (no parser of repo.toml outside qqsync)")
+    return 1 if findings else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="qqsync", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -126,6 +138,12 @@ def main(argv: list[str] | None = None) -> int:
     vf.add_argument("--platform", help="for per-platform pins (default: this machine)")
     vf.add_argument("--manifest", default=DEFAULT_PATH)
     vf.set_defaults(run=_verify)
+
+    g = sub.add_parser("guard", help="fail if anything parses repo.toml outside qqsync")
+    g.add_argument("root", nargs="?", default=".")
+    g.add_argument("--allow", action="append", metavar="GLOB",
+                   help="skip these paths; only quirq-ai/sync itself uses this, for its own library")
+    g.set_defaults(run=_guard)
 
     args = parser.parse_args(argv)
     try:
