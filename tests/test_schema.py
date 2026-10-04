@@ -9,7 +9,8 @@ from qqsync.manifest import load, loads
 FIXTURES = Path(__file__).parent / "fixtures"
 PRODUCT_MANIFESTS = sorted(FIXTURES.glob("*.repo.toml"))
 DIGEST = "sha256:" + "a" * 64
-KINDS = ["python-service", "pytest", "node-app", "static-docs", "container-image"]  # infra-config kinds.toml
+# A stand-in for infra-config kinds.toml; CI checks the fixtures against the real list (presubmit.yml).
+KINDS = ["python-service", "pytest", "node-app", "static-docs", "container-image"]
 
 
 def manifest(body: str) -> str:
@@ -57,6 +58,15 @@ def test_minimal_manifest():
     (manifest('targets = [{ name = "a", kind = "k", deps = ["b"] }, { name = "b", kind = "k", deps = ["a"] }]'),
      "dependency cycle a -> b -> a"),
     (manifest("targets = ["), "not valid TOML"),
+    ('schema = 1\ntargets = [{ name = "a", kind = "k" }]', "must be a string"),
+    (manifest('targets = [{ name = "a\\n", kind = "k" }]'), "whitespace"),
+    (manifest('targets = [{ name = "a", kind = "k\\n" }]'), "whitespace"),
+    (manifest(f'[deps.d]\nsource = "x\\n"\ndigest = "{DIGEST}"\n[[targets]]\nname = "a"\nkind = "k"'), "whitespace"),
+    (manifest(f'[deps.d]\nsource = "x"\ndigest = "{DIGEST}\\n"\n[[targets]]\nname = "a"\nkind = "k"'), "whitespace"),
+    (manifest('targets = [{ name = "a", kind = "k", srcs = ["/etc/passwd"] }]'), "targets[0].srcs[0]"),
+    (manifest('targets = [{ name = "a", kind = "k", srcs = ["src/../../x"] }]'), "no .. segment"),
+    (manifest('targets = [{ name = "a", kind = "k", outs = [".."] }]'), "targets[0].outs[0]"),
+    (manifest('targets = [{ name = "a", kind = "k", outs = ["out\\n"] }]'), "line breaks"),
 ])
 def test_rejected(text, expected):
     found = problems(text)
@@ -90,3 +100,19 @@ def test_cli_validate(capsys, tmp_path):
 def test_cli_missing_file(capsys, tmp_path):
     assert main(["validate", str(tmp_path / "nope.toml")]) == 1
     assert "cannot read" in capsys.readouterr().err
+
+
+def test_relative_paths_allowed():
+    text = manifest('targets = [{ name = "a", kind = "k", srcs = ["src/**", "..config", "a/..b/c", "*.ts"], outs = [".next/"] }]')
+    assert problems(text) == []
+
+
+def test_non_table_pin_reports_once():
+    found = problems(manifest('[toolchains]\nx = 1\n[[targets]]\nname = "a"\nkind = "k"'))
+    assert found == ["toolchains.x: 1 is not of type 'object'"]
+
+
+def test_problems_ordered_by_index():
+    targets = ", ".join(f'{{ name = "t{i}", kind = "{"K" if i in (2, 10) else "k"}" }}' for i in range(12))
+    found = problems(manifest(f"targets = [{targets}]"))
+    assert [p.split(":")[0] for p in found] == ["targets[2].kind", "targets[10].kind"]

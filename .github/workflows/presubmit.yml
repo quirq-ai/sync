@@ -30,4 +30,5 @@ jobs:
         run: |
           kinds=$(python -c "import sys; from pathlib import Path; sys.path.insert(0, '.qq/infra-config/tools'); import qqcfg; print(' '.join('--kind=' + k['name'] for k in qqcfg.load(Path('.qq/infra-config'))['kinds']['kind']))")
           echo "kinds: $kinds"
+          if [ -z "$kinds" ]; then echo "::error::infra-config listed no kinds"; exit 1; fi
           qqsync validate tests/fixtures/xo-space.repo.toml tests/fixtures/innernet.repo.toml $kinds

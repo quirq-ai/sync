@@ -19,8 +19,8 @@ other.
 ```toml
 schema = "quirq-repo/1"
 
-[qq]                       # the qq CLI version this repo runs
-version = "0.1.0"
+[qq]                       # the qq CLI version this repo runs; pinned by version until
+version = "0.1.0"          # depot publishes releases, then also by source and digest
 
 [toolchains.python]        # names match the toolchains in infra-config kinds.toml
 version = "3.14.8"         # a label; the digest is what is verified
@@ -46,7 +46,8 @@ deps = ["server"]          # other targets in this manifest
 params = { shards = "auto" } # kind-specific, passed to the adapter as is
 ```
 
-Targets may also declare `outs` (outputs) and `cacheable = false` (runs, never reused). The full
+Paths in `srcs` and `outs` are relative to the repo root (no leading `/`, no `..`). Targets may
+also declare `outs` (outputs) and `cacheable = false` (runs, never reused). The full
 schema is [`src/qqsync/schema/quirq-repo-1.schema.json`](src/qqsync/schema/quirq-repo-1.schema.json).
 Unknown keys are errors. On top of the schema, target names must be unique, target `deps` must name
 targets in the same manifest, and the target graph must have no cycle. `quirq-repo/1` only grows in

@@ -31,17 +31,22 @@ def validate(data: dict, known_kinds: Iterable[str] | None = None) -> list[str]:
     """Every problem with a parsed manifest, as 'location: message' strings. Empty means valid."""
     from jsonschema import Draft202012Validator
 
-    version = data.get("schema") if isinstance(data, dict) else None
-    if not isinstance(version, str):
+    if not isinstance(data, dict) or "schema" not in data:
         return ["schema: missing; the first line of a manifest is schema = \"" + CURRENT + "\""]
+    version = data["schema"]
+    if not isinstance(version, str):
+        return [f"schema: must be a string such as \"{CURRENT}\", not {version!r}"]
     if version not in SCHEMA_FILES:
         known = ", ".join(sorted(SCHEMA_FILES))
         return [f"schema: {version!r} is not a schema this qqsync knows ({known}); "
                 "upgrade the pinned qqsync or fix the version"]
 
     validator = Draft202012Validator(schema_for(version))
-    problems = [f"{_where(e.absolute_path)}: {_message(e)}"
-                for e in sorted(validator.iter_errors(data), key=lambda e: list(map(str, e.absolute_path)))]
+    errors = sorted(validator.iter_errors(data), key=lambda e: [(isinstance(p, int), p) for p in e.absolute_path])
+    # A value of the wrong type also fails every oneOf branch; report only the type.
+    wrong_type = {tuple(e.absolute_path) for e in errors if e.validator == "type"}
+    problems = [f"{_where(e.absolute_path)}: {_message(e)}" for e in errors
+                if not (e.validator == "oneOf" and tuple(e.absolute_path) in wrong_type)]
     if problems:
         return problems  # the graph checks below assume the shape is right
     return _check_targets(data["targets"], None if known_kinds is None else set(known_kinds))
@@ -51,6 +56,10 @@ def _message(error) -> str:
     # "is not valid under any of the given schemas" names no fix; the schema's description does.
     if error.validator == "oneOf" and "description" in error.schema:
         return "expected " + error.schema["description"][0].lower() + error.schema["description"][1:]
+    if error.validator == "not" and error.validator_value in ({"pattern": "\\s"}, {"pattern": "[\\r\\n]"}):
+        return f"{error.instance!r} must not contain whitespace or line breaks"
+    if error.validator == "pattern" and "description" in error.schema:
+        return f"{error.instance!r} is not valid: {error.schema['description']}"
     return error.message
 
 
