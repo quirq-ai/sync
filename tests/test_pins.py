@@ -294,12 +294,21 @@ def test_oci_token_realm_must_be_https(tmp_path, registry):
     secret = tmp_path / "creds.json"
     secret.write_text('{"token": "SECRET-LOCAL"}')
     Registry.want_token = True
-    for realm in (f"{secret.as_uri()}#", "http://internal.example/token", "ftp://x/token",
+    for realm in (f"{secret.as_uri()}#", secret.as_uri(), "http://internal.example/token", "ftp://x/token",
                   f"http://{registry['host']}/token#"):
         Registry.realm = realm
         with pytest.raises(PinError, match="refusing token realm"):
             fetch(oci_pin(registry, sha(registry["layer"])), tmp_path / "x")
     assert sorted(p.name for p in tmp_path.iterdir()) == ["creds.json"]
+
+
+@pytest.mark.parametrize("realm", ["https://127.0.0.1:8443/token", "https://169.254.169.254/token",
+                                   "https://[::ffff:10.0.0.1]/t", "https://localhost./t", "https://[::1]/t"])
+def test_oci_token_realm_not_internal(monkeypatch, realm):
+    from qqsync.pins import _anonymous_token
+    monkeypatch.delenv("QQ_OCI_SCHEME", raising=False)
+    with pytest.raises(PinError, match="internal address"):
+        _anonymous_token(f'Bearer realm="{realm}",service="reg"')
 
 
 def test_oci_bad_token_body(tmp_path, registry):

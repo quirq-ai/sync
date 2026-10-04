@@ -7,6 +7,7 @@ place when the digest matches. Anything else raises PinMismatch, and the build s
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import http.client
 import json
 import os
@@ -182,6 +183,18 @@ def _local_http_allowed(host: str | None) -> bool:
     return host in _LOCAL_HOSTS and os.environ.get("QQ_OCI_SCHEME") == "http"
 
 
+def _internal_address(host: str) -> bool:
+    """True for localhost or an IP literal that is loopback, private, link-local or unspecified."""
+    if host.rstrip(".") == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    address = getattr(address, "ipv4_mapped", None) or address
+    return address.is_loopback or address.is_private or address.is_link_local or address.is_unspecified
+
+
 def _oci_open(url: str, accept: str | None, token: list[str]):
     """Open a registry URL, answering one bearer-token challenge anonymously (public packages only).
 
@@ -213,8 +226,11 @@ def _anonymous_token(challenge: str) -> str:
     if "#" in realm or not parts.hostname or not (
             parts.scheme == "https" or (parts.scheme == "http" and _local_http_allowed(parts.hostname))):
         raise PinError(f"refusing token realm {realm!r}; it must be an https:// URL")
+    if not _local_http_allowed(parts.hostname) and _internal_address(parts.hostname):
+        # TODO(expert): a public name that resolves to an internal address still gets through.
+        raise PinError(f"refusing token realm {realm!r}; it points at an internal address")
     query = urllib.parse.urlencode({k: fields[k] for k in ("service", "scope") if k in fields})
-    sep = "&" if parts.query else "?"
+    sep = "&" if "?" in realm else "?"
     with _OPENER.open(f"{realm}{sep}{query}", timeout=60) as r:
         body = json.loads(r.read(MAX_MANIFEST + 1))
     token = (body.get("token") or body.get("access_token")) if isinstance(body, dict) else None
