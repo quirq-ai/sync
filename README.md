@@ -128,7 +128,7 @@ Python 3.14 in CI (the org pin in infra-config); the library itself needs 3.11 o
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-SYN-01 | Manifest schema `quirq-repo/1` | #2 | merged |
-| V0-SYN-02 | Parser and editor library | #3 | in review |
+| V0-SYN-02 | Parser and editor library | #3 | merged; done-when waits on V0-DEP-02 and V0-ROL-01 adopting it |
 | V0-SYN-03 | Pin check | #4 | in review |
 | V0-SYN-04 | "No other parser" check | | not started |
 
