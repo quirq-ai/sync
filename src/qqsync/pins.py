@@ -162,7 +162,11 @@ _OPENER = urllib.request.build_opener(_HttpsOnlyRedirects)
 
 OCI_ACCEPT = ", ".join(["application/vnd.oci.image.manifest.v1+json",
                         "application/vnd.docker.distribution.manifest.v2+json"])
-OCI_SOURCE = re.compile(r"^oci://(?P<registry>[^/@]+)/(?P<repository>[^@]+?)(?:@(?P<manifest>sha256:[0-9a-f]{64}))?$")
+_OCI_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"  # the OCI distribution spec's name grammar
+OCI_SOURCE = re.compile(r"^oci://(?P<registry>[A-Za-z0-9.-]+(?::[0-9]+)?|\[::1\](?::[0-9]+)?)"
+                        rf"/(?P<repository>{_OCI_COMPONENT}(?:/{_OCI_COMPONENT})*)"
+                        r"(?:@(?P<manifest>sha256:[0-9a-f]{64}))?$")
+_LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def oci_parts(source: str) -> tuple[str, str, str | None]:
@@ -171,6 +175,11 @@ def oci_parts(source: str) -> tuple[str, str, str | None]:
     if not m:
         raise PinError(f"{source!r} is not oci://REGISTRY/REPOSITORY[@sha256:<64 hex>]")
     return m["registry"], m["repository"], m["manifest"]
+
+
+def _local_http_allowed(host: str | None) -> bool:
+    """Plain http only for a registry on this machine (tests, a local mirror), and only when asked."""
+    return host in _LOCAL_HOSTS and os.environ.get("QQ_OCI_SCHEME") == "http"
 
 
 def _oci_open(url: str, accept: str | None, token: list[str]):
@@ -195,15 +204,22 @@ def _oci_open(url: str, accept: str | None, token: list[str]):
 
 def _anonymous_token(challenge: str) -> str:
     fields = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
-    if "realm" not in fields:
+    realm = fields.get("realm", "")
+    if not realm:
         raise PinError(f"registry asked for a token without a realm: {challenge!r}")
+    # The registry names the realm, so it must not be able to point qq at a local file or an
+    # internal service and have the reply sent back to it as a token.
+    parts = urllib.parse.urlsplit(realm)
+    if "#" in realm or not parts.hostname or not (
+            parts.scheme == "https" or (parts.scheme == "http" and _local_http_allowed(parts.hostname))):
+        raise PinError(f"refusing token realm {realm!r}; it must be an https:// URL")
     query = urllib.parse.urlencode({k: fields[k] for k in ("service", "scope") if k in fields})
-    sep = "&" if "?" in fields["realm"] else "?"
-    with _OPENER.open(f"{fields['realm']}{sep}{query}", timeout=60) as r:
-        body = json.load(r)
-    token = body.get("token") or body.get("access_token")
-    if not token:
-        raise PinError(f"registry token endpoint {fields['realm']} returned no token")
+    sep = "&" if parts.query else "?"
+    with _OPENER.open(f"{realm}{sep}{query}", timeout=60) as r:
+        body = json.loads(r.read(MAX_MANIFEST + 1))
+    token = (body.get("token") or body.get("access_token")) if isinstance(body, dict) else None
+    if not isinstance(token, str) or not token:
+        raise PinError(f"registry token endpoint {realm} returned no token")
     return token
 
 
@@ -215,9 +231,7 @@ def _open_oci_layer(pin: Pin):
     another's bytes. The layer's bytes are then checked against the pin like any download.
     """
     registry, repository, manifest_digest = oci_parts(pin.source)
-    # Plain http only for a registry on this machine (tests, a local mirror), and only when asked.
-    local = registry.rsplit(":", 1)[0] in ("127.0.0.1", "localhost", "[::1]")
-    scheme = "http" if local and os.environ.get("QQ_OCI_SCHEME") == "http" else "https"
+    scheme = "http" if _local_http_allowed(urllib.parse.urlsplit(f"//{registry}").hostname) else "https"
     base = f"{scheme}://{registry}/v2/{repository}"
     token: list[str] = []
     if manifest_digest:
@@ -228,8 +242,12 @@ def _open_oci_layer(pin: Pin):
         if "sha256:" + hashlib.sha256(raw).hexdigest() != manifest_digest:
             raise PinMismatch(f"{pin.label}: the registry's manifest does not hash to {manifest_digest}")
         try:
-            layers = [layer.get("digest") for layer in json.loads(raw).get("layers", [])]
-        except (ValueError, AttributeError):
+            doc = json.loads(raw)
+            if isinstance(doc, dict) and "manifests" in doc:
+                raise PinError(f"{pin.label}: {manifest_digest} is an image index; pin the manifest of "
+                               "one platform instead")
+            layers = [layer.get("digest") for layer in doc.get("layers", [])]
+        except (ValueError, AttributeError, TypeError):
             raise PinError(f"{pin.label}: manifest {manifest_digest} is not an image manifest") from None
         if pin.digest not in layers:
             raise PinMismatch(f"{pin.label}: manifest {manifest_digest} has no layer {pin.digest}")
@@ -258,11 +276,12 @@ def fetch(pin: Pin, dest: str | Path) -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".part")
         sha = hashlib.sha256()
-        opened = _open_oci_layer(pin) if scheme == "oci" else _OPENER.open(pin.source, timeout=60)
-        with os.fdopen(fd, "wb") as out, opened as resp:
-            while chunk := resp.read(CHUNK):
-                sha.update(chunk)
-                out.write(chunk)
+        with os.fdopen(fd, "wb") as out:
+            opened = _open_oci_layer(pin) if scheme == "oci" else _OPENER.open(pin.source, timeout=60)
+            with opened as resp:
+                while chunk := resp.read(CHUNK):
+                    sha.update(chunk)
+                    out.write(chunk)
         actual = "sha256:" + sha.hexdigest()
         if actual != pin.digest:
             raise PinMismatch(f"{pin.label}: {pin.source} has digest {actual}, but the manifest pins "

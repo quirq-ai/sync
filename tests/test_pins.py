@@ -205,13 +205,15 @@ class Registry(BaseHTTPRequestHandler):
     manifests: dict = {}
     blobs: dict = {}
     want_token = False
+    realm = None  # default: this server's /token
+    token_body = json.dumps({"token": "anon"}).encode()
 
     def do_GET(self):
         if self.path.startswith("/token"):
-            return self._send(200, json.dumps({"token": "anon"}).encode())
+            return self._send(200, self.token_body)
         if self.want_token and self.headers.get("Authorization") != "Bearer anon":
             self.send_response(401)
-            realm = f"http://{self.headers['Host']}/token"
+            realm = self.realm or f"http://{self.headers['Host']}/token"
             self.send_header("WWW-Authenticate", f'Bearer realm="{realm}",service="reg",scope="pull"')
             self.end_headers()
             return
@@ -236,7 +238,8 @@ def registry(monkeypatch):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Registry)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     monkeypatch.setenv("QQ_OCI_SCHEME", "http")
-    Registry.want_token = False
+    Registry.want_token, Registry.realm = False, None
+    Registry.token_body = json.dumps({"token": "anon"}).encode()
     layer, other = b"toolchain layer bytes", b"some other artifact"
     manifest = json.dumps({"schemaVersion": 2, "layers": [{"digest": sha(layer)}]}).encode()
     Registry.manifests = {sha(manifest): manifest}
@@ -285,6 +288,55 @@ def test_oci_errors(tmp_path, registry):
     with pytest.raises(PinError, match="is not oci://"):
         fetch(Pin("toolchains", "tc", None, "oci://no-repository", sha(b"x")), tmp_path / "x")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_oci_token_realm_must_be_https(tmp_path, registry):
+    secret = tmp_path / "creds.json"
+    secret.write_text('{"token": "SECRET-LOCAL"}')
+    Registry.want_token = True
+    for realm in (f"{secret.as_uri()}#", "http://internal.example/token", "ftp://x/token",
+                  f"http://{registry['host']}/token#"):
+        Registry.realm = realm
+        with pytest.raises(PinError, match="refusing token realm"):
+            fetch(oci_pin(registry, sha(registry["layer"])), tmp_path / "x")
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["creds.json"]
+
+
+def test_oci_bad_token_body(tmp_path, registry):
+    Registry.want_token = True
+    for body in (b'["anon"]', b'"anon"', b'{"token": 7}', b'{}', b'not json'):
+        Registry.token_body = body
+        with pytest.raises(PinError):
+            fetch(oci_pin(registry, sha(registry["layer"])), tmp_path / "x")
+
+
+def test_oci_index_and_odd_manifests(tmp_path, registry):
+    for doc in ({"mediaType": "application/vnd.oci.image.index.v1+json", "manifests": []},
+                {"layers": "nope"}, ["not", "a", "manifest"]):
+        raw = json.dumps(doc).encode()
+        Registry.manifests[sha(raw)] = raw
+        pin = Pin("toolchains", "tc", None, f"oci://{registry['host']}/quirq-ai/tc@{sha(raw)}",
+                  sha(registry["layer"]))
+        with pytest.raises(PinError, match="image index" if "manifests" in doc else "not an image manifest"):
+            fetch(pin, tmp_path / "x")
+
+
+@pytest.mark.parametrize("source", ["oci://r.example/a/../../x", "oci://r.example/r?x#", "oci://r.example/r b",
+                                    "oci://r.example/Upper", "oci://r.example/r/", "oci://r .example/r"])
+def test_oci_source_names_are_checked(tmp_path, source):
+    with pytest.raises(PinError, match="is not oci://"):
+        fetch(Pin("toolchains", "tc", None, source, sha(b"x")), tmp_path / "x")
+
+
+def test_failed_fetches_do_not_leak_descriptors(tmp_path, registry):
+    fds = Path("/proc/self/fd")
+    if not fds.exists():
+        pytest.skip("needs /proc")
+    before = len(list(fds.iterdir()))
+    for _ in range(20):
+        with pytest.raises(PinError):
+            fetch(oci_pin(registry, sha(b"missing"), with_manifest=False), tmp_path / "x")
+    assert len(list(fds.iterdir())) <= before + 2
 
 
 def test_oci_plain_http_only_for_this_machine(monkeypatch, tmp_path):
