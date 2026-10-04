@@ -138,6 +138,7 @@ def oci_manifest(source: str, digest: str) -> str:
     ("OCI://ghcr.io/quirq-ai/toolchains/python", MANIFEST_SHA, "is not oci://REGISTRY/REPO@sha256:<manifest>"),
     (f"Oci://ghcr.io/quirq-ai/toolchains/python@{MANIFEST_SHA}", MANIFEST_SHA, "is not oci://"),
     ("oci:ghcr.io/quirq-ai/toolchains/python", MANIFEST_SHA, "is not oci://"),
+    ("\\u0001oci://ghcr.io/quirq-ai/toolchains/python", MANIFEST_SHA, "is not oci://"),
 ])
 def test_oci_pin_shape(source, digest, expected):
     found = problems(oci_manifest(source, digest))

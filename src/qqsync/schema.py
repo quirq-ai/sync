@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 from collections.abc import Iterable
 from functools import cache
 from importlib import resources
@@ -70,7 +71,9 @@ def _check_oci_pins(data: dict) -> list[str]:
             arts += ([(f"{section}.{name}.platforms.{plat}", art) for plat, art in pin["platforms"].items()]
                      if "platforms" in pin else [(f"{section}.{name}", pin)])
     for where, art in arts:
-        if not art["source"].lower().startswith("oci:"):  # any spelling of the scheme
+        source = art["source"]
+        # Any spelling of the scheme, including what urlsplit (and so fetch) reads as oci.
+        if not (source.lower().startswith("oci:") or urllib.parse.urlsplit(source).scheme.lower() == "oci"):
             continue
         m = OCI_SOURCE.match(art["source"])
         if not m:
