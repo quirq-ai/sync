@@ -64,23 +64,24 @@ def validate(data: dict, known_kinds: Iterable[str] | None = None) -> list[str]:
 def _check_oci_pins(data: dict) -> list[str]:
     """oci:// pins must name the manifest and pin a layer, or the bytes fetched are never pinned."""
     problems = []
+    arts = [("qq", data["qq"])] if "source" in data.get("qq", {}) else []
     for section in ("toolchains", "deps"):
         for name, pin in data.get(section, {}).items():
-            arts = ([(f"{section}.{name}.platforms.{plat}", art) for plat, art in pin["platforms"].items()]
-                    if "platforms" in pin else [(f"{section}.{name}", pin)])
-            for where, art in arts:
-                if not art["source"].startswith("oci://"):
-                    continue
-                m = OCI_SOURCE.match(art["source"])
-                if not m:
-                    problems.append(f"{where}.source: {art['source']!r} is not "
-                                    "oci://REGISTRY/REPO@sha256:<manifest> (lower-case OCI repository names)")
-                elif not m["manifest"]:
-                    problems.append(f"{where}.source: {art['source']!r} has no @sha256:<manifest>; {OCI_PIN_RULE}")
-                elif not art["digest"].startswith("sha256:") or art["digest"] == m["manifest"]:
-                    problems.append(f"{where}.digest: {art['digest']} must be the layer's sha256, not "
-                                    f"{'the manifest digest' if art['digest'] == m['manifest'] else 'a commit'}; "
-                                    f"{OCI_PIN_RULE}")
+            arts += ([(f"{section}.{name}.platforms.{plat}", art) for plat, art in pin["platforms"].items()]
+                     if "platforms" in pin else [(f"{section}.{name}", pin)])
+    for where, art in arts:
+        if not art["source"].lower().startswith("oci:"):  # any spelling of the scheme
+            continue
+        m = OCI_SOURCE.match(art["source"])
+        if not m:
+            problems.append(f"{where}.source: {art['source']!r} is not "
+                            "oci://REGISTRY/REPO@sha256:<manifest> (lower-case OCI repository names)")
+        elif not m["manifest"]:
+            problems.append(f"{where}.source: {art['source']!r} has no @sha256:<manifest>; {OCI_PIN_RULE}")
+        elif not art["digest"].startswith("sha256:") or art["digest"] == m["manifest"]:
+            problems.append(f"{where}.digest: {art['digest']} must be the layer's sha256, not "
+                            f"{'the manifest digest' if art['digest'] == m['manifest'] else 'a commit'}; "
+                            f"{OCI_PIN_RULE}")
     return problems
 
 

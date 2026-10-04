@@ -168,10 +168,10 @@ _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
 def oci_parts(source: str) -> tuple[str, str, str | None]:
-    """registry, repository and the optional manifest digest of oci://REGISTRY/REPOSITORY[@sha256:...]."""
+    """registry, repository and manifest digest (None when missing) of oci://REGISTRY/REPOSITORY@sha256:<manifest>."""
     m = OCI_SOURCE.match(source)
     if not m:
-        raise PinError(f"{source!r} is not oci://REGISTRY/REPOSITORY[@sha256:<64 hex>]")
+        raise PinError(f"{source!r} is not oci://REGISTRY/REPOSITORY@sha256:<64 hex>")
     return m["registry"], m["repository"], m["manifest"]
 
 

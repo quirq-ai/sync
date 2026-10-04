@@ -135,6 +135,9 @@ def oci_manifest(source: str, digest: str) -> str:
     (f"{OCI}@{MANIFEST_SHA}", MANIFEST_SHA, "must be the layer's sha256, not the manifest digest"),
     (f"{OCI}@{MANIFEST_SHA}", "git:" + "f" * 40, "not a commit"),
     (f"oci://ghcr.io/Quirq/python@{MANIFEST_SHA}", DIGEST, "is not oci://REGISTRY/REPO@sha256:<manifest>"),
+    ("OCI://ghcr.io/quirq-ai/toolchains/python", MANIFEST_SHA, "is not oci://REGISTRY/REPO@sha256:<manifest>"),
+    (f"Oci://ghcr.io/quirq-ai/toolchains/python@{MANIFEST_SHA}", MANIFEST_SHA, "is not oci://"),
+    ("oci:ghcr.io/quirq-ai/toolchains/python", MANIFEST_SHA, "is not oci://"),
 ])
 def test_oci_pin_shape(source, digest, expected):
     found = problems(oci_manifest(source, digest))
@@ -152,3 +155,9 @@ def test_cli_rejects_bad_oci_pin(capsys, tmp_path):
     assert "has no @sha256:<manifest>" in capsys.readouterr().err
     assert main(["pins", "--strict", str(bad)]) == 1
     assert "has no @sha256:<manifest>" in capsys.readouterr().err
+
+
+def test_qq_oci_pin_is_checked():
+    text = manifest(f'[qq]\nversion = "1"\nsource = "{OCI}"\ndigest = "{MANIFEST_SHA}"\n'
+                    '[[targets]]\nname = "a"\nkind = "k"')
+    assert any(p.startswith("qq.source:") and "has no @sha256:<manifest>" in p for p in problems(text))
