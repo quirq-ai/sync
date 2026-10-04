@@ -116,3 +116,49 @@ def test_problems_ordered_by_index():
     targets = ", ".join(f'{{ name = "t{i}", kind = "{"K" if i in (2, 10) else "k"}" }}' for i in range(12))
     found = problems(manifest(f"targets = [{targets}]"))
     assert [p.split(":")[0] for p in found] == ["targets[2].kind", "targets[10].kind"]
+
+
+MANIFEST_SHA = "sha256:" + "b" * 64
+OCI = "oci://ghcr.io/quirq-ai/toolchains/python"
+
+
+def oci_manifest(source: str, digest: str) -> str:
+    return manifest(f'[toolchains.python]\nversion = "3.14.8"\n'
+                    f'platforms.linux-x86_64 = {{ source = "{source}", digest = "{digest}" }}\n'
+                    '[[targets]]\nname = "a"\nkind = "k"')
+
+
+@pytest.mark.parametrize("source, digest, expected", [
+    # The xo-space #214 audit's form: no manifest in the source, the manifest digest as the pin.
+    (OCI, MANIFEST_SHA, "has no @sha256:<manifest>"),
+    (OCI, DIGEST, "has no @sha256:<manifest>"),
+    (f"{OCI}@{MANIFEST_SHA}", MANIFEST_SHA, "must be the layer's sha256, not the manifest digest"),
+    (f"{OCI}@{MANIFEST_SHA}", "git:" + "f" * 40, "not a commit"),
+    (f"oci://ghcr.io/Quirq/python@{MANIFEST_SHA}", DIGEST, "is not oci://REGISTRY/REPO@sha256:<manifest>"),
+    ("OCI://ghcr.io/quirq-ai/toolchains/python", MANIFEST_SHA, "is not oci://REGISTRY/REPO@sha256:<manifest>"),
+    (f"Oci://ghcr.io/quirq-ai/toolchains/python@{MANIFEST_SHA}", MANIFEST_SHA, "is not oci://"),
+    ("oci:ghcr.io/quirq-ai/toolchains/python", MANIFEST_SHA, "is not oci://"),
+    ("\\u0001oci://ghcr.io/quirq-ai/toolchains/python", MANIFEST_SHA, "is not oci://"),
+])
+def test_oci_pin_shape(source, digest, expected):
+    found = problems(oci_manifest(source, digest))
+    assert any(expected in p and "toolchains.python.platforms.linux-x86_64" in p for p in found), found
+
+
+def test_oci_pin_good_shape():
+    assert problems(oci_manifest(f"{OCI}@{MANIFEST_SHA}", DIGEST)) == []
+
+
+def test_cli_rejects_bad_oci_pin(capsys, tmp_path):
+    bad = tmp_path / "repo.toml"
+    bad.write_text(oci_manifest(OCI, MANIFEST_SHA))
+    assert main(["validate", str(bad)]) == 1
+    assert "has no @sha256:<manifest>" in capsys.readouterr().err
+    assert main(["pins", "--strict", str(bad)]) == 1
+    assert "has no @sha256:<manifest>" in capsys.readouterr().err
+
+
+def test_qq_oci_pin_is_checked():
+    text = manifest(f'[qq]\nversion = "1"\nsource = "{OCI}"\ndigest = "{MANIFEST_SHA}"\n'
+                    '[[targets]]\nname = "a"\nkind = "k"')
+    assert any(p.startswith("qq.source:") and "has no @sha256:<manifest>" in p for p in problems(text))

@@ -107,8 +107,11 @@ Redirects are followed only to `https://`.
 |---|---|---|
 | `https://…`, `file://…` | `sha256:` | the bytes at that URL |
 | `oci://REGISTRY/REPO@sha256:<manifest>` | `sha256:<layer>` | the manifest must hash to its digest and list the layer; the layer's bytes must hash to the pin (how quirq-ai/toolchains publishes) |
-| `oci://REGISTRY/REPO` | `sha256:<layer>` | that layer's bytes |
 | a git URL | `git:<commit>` | checked out by `qq`, then `verify` |
+
+An `oci://` pin always names the manifest and pins a different value, the layer. `validate`,
+`pins --strict` and `fetch` reject an `oci://` source without `@sha256:<manifest>`, and a digest
+equal to the manifest digest, since either leaves the fetched bytes unpinned.
 
 Registry packages must be public: `fetch` asks the registry for an anonymous token and never sends
 credentials. Per-platform pins default to this machine's platform (`linux-x86_64`, `macos-arm64`, ...);

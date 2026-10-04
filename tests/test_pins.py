@@ -265,8 +265,15 @@ def test_oci_layer_not_in_manifest_is_refused(tmp_path, registry):
     with pytest.raises(PinMismatch, match="has no layer"):
         fetch(oci_pin(registry, sha(registry["other"])), tmp_path / "x")
     assert list(tmp_path.iterdir()) == []
-    # Without a manifest in the source, the layer is only checked against its own digest.
-    assert fetch(oci_pin(registry, sha(registry["other"]), with_manifest=False), tmp_path / "y").exists()
+
+
+def test_oci_pin_must_name_the_manifest_and_pin_the_layer(tmp_path, registry):
+    # A bare source or the manifest digest as the pin would leave the fetched bytes unpinned.
+    with pytest.raises(PinError, match="names the image manifest"):
+        fetch(oci_pin(registry, sha(registry["other"]), with_manifest=False), tmp_path / "y")
+    with pytest.raises(PinError, match="names the image manifest"):
+        fetch(oci_pin(registry, registry["manifest"]), tmp_path / "y")
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_oci_tampered_manifest_and_blob(tmp_path, registry):
@@ -283,8 +290,11 @@ def test_oci_tampered_manifest_and_blob(tmp_path, registry):
 
 
 def test_oci_errors(tmp_path, registry):
+    listed = json.dumps({"schemaVersion": 2, "layers": [{"digest": sha(b"missing")}]}).encode()
+    Registry.manifests[sha(listed)] = listed
     with pytest.raises(PinError, match="HTTP 404"):
-        fetch(oci_pin(registry, sha(b"missing"), with_manifest=False), tmp_path / "x")
+        fetch(Pin("toolchains", "tc", None, f"oci://{registry['host']}/quirq-ai/tc@{sha(listed)}", sha(b"missing")),
+              tmp_path / "x")
     with pytest.raises(PinError, match="is not oci://"):
         fetch(Pin("toolchains", "tc", None, "oci://no-repository", sha(b"x")), tmp_path / "x")
     assert list(tmp_path.iterdir()) == []
@@ -353,8 +363,8 @@ def test_oci_plain_http_only_for_this_machine(monkeypatch, tmp_path):
     seen = []
     monkeypatch.setattr("qqsync.pins._oci_open", lambda url, *a: seen.append(url) or (_ for _ in ()).throw(PinError("stop")))
     with pytest.raises(PinError):
-        fetch(Pin("toolchains", "tc", None, "oci://registry.example/r", sha(b"x")), tmp_path / "x")
-    assert seen == ["https://registry.example/v2/r/blobs/" + sha(b"x")]
+        fetch(Pin("toolchains", "tc", None, f"oci://registry.example/r@{sha(b'm')}", sha(b"x")), tmp_path / "x")
+    assert seen == ["https://registry.example/v2/r/manifests/" + sha(b"m")]
 
 
 def test_cli_fetch_oci_fixture_shape(tmp_path, registry):
