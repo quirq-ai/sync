@@ -159,3 +159,33 @@ def test_cli_pins(tmp_path, capsys):
     assert main(["pins", "--strict", str(path)]) == 1
     assert "placeholder" in capsys.readouterr().err
     assert main(["pins", "--strict", str(FIXTURES / "xo-space.repo.toml")]) == 0
+
+
+def test_fetched_file_has_normal_permissions(tmp_path, artifact):
+    out = fetch(Pin("toolchains", "tc", None, artifact.as_uri(), sha(b"the real toolchain")), tmp_path / "o")
+    assert out.stat().st_mode & 0o044 == 0o044  # group and others can read (umask 022 or 002)
+
+
+def test_fetch_bad_destinations(tmp_path, artifact):
+    pin = Pin("toolchains", "tc", None, artifact.as_uri(), sha(b"the real toolchain"))
+    with pytest.raises(PinError, match="is a directory"):
+        fetch(pin, tmp_path)
+    with pytest.raises(PinError, match="failed"):
+        fetch(pin, artifact / "under-a-file")
+    with pytest.raises(PinError, match="failed"):
+        fetch(Pin("deps", "d", None, "https://example.invalid:abc/x", sha(b"x")), tmp_path / "x")
+
+
+def test_verify_missing_file(tmp_path):
+    with pytest.raises(PinError, match="cannot read"):
+        verify_file(Pin("deps", "d", None, "s", sha(b"x")), tmp_path / "nope")
+
+
+def test_redirects_only_to_https():
+    import urllib.error
+    import urllib.request
+    from qqsync.pins import _HttpsOnlyRedirects
+    req = urllib.request.Request("https://example.invalid/a")
+    with pytest.raises(urllib.error.URLError, match="only https"):
+        _HttpsOnlyRedirects().redirect_request(req, None, 302, "Found", {}, "http://example.invalid/b")
+    assert _HttpsOnlyRedirects().redirect_request(req, None, 302, "Found", {}, "https://example.invalid/b")
