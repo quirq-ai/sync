@@ -105,6 +105,24 @@ Redirects are followed only to `https://`. Per-platform pins default to this mac
 pass `--platform` to pick another. Commit pins are checked out by the `qq` CLI and verified with
 `verify`.
 
+## No other parser: `qqsync guard`
+
+Any repo's presubmit can run `qqsync guard`. It fails when a tracked file both names the manifest
+(`repo.toml`, or qqsync's `DEFAULT_PATH`) and reads TOML some other way: any identifier containing
+`toml` (tomllib, pytoml, smol-toml, `Toml`, `TOML.parse`), a data tool such as yq on the manifest,
+or importing the manifest directly. Comment lines and `qqsync <command>` lines don't count, nor do
+`.toml` filenames or the word TOML in prose. Markdown, plain text and TOML data files are skipped. The fix is
+always the same: read the manifest with `qqsync show` (JSON) or the qqsync library.
+
+```sh
+python -m pip install "qqsync @ git+https://github.com/quirq-ai/sync@<commit>"
+qqsync guard .        # exit 1 with file:line for each second parser, or PASS
+```
+
+`--allow GLOB` exists only for this repo's own library and test samples. The check is a heuristic;
+a parser that reads the file with plain text tools is not caught yet (`TODO(expert)` in
+`src/qqsync/guard.py`).
+
 ## Use it
 
 Other qq repos depend on `sync` by pinned commit, never by copying code:
@@ -127,9 +145,9 @@ Python 3.14 in CI (the org pin in infra-config); the library itself needs 3.11 o
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-SYN-01 | Manifest schema `quirq-repo/1` | #2 | merged |
+| V0-SYN-01 | Manifest schema `quirq-repo/1` | #2 | merged; xo-space and innernet fixtures validate in presubmit (onboarding lands the real manifests) |
 | V0-SYN-02 | Parser and editor library | #3 | merged; done-when waits on V0-DEP-02 and V0-ROL-01 adopting it |
-| V0-SYN-03 | Pin check | #4 | in review |
-| V0-SYN-04 | "No other parser" check | | not started |
+| V0-SYN-03 | Pin check | #4 | merged; done-when shown by a presubmit step |
+| V0-SYN-04 | "No other parser" check | #5 | merged; done-when shown by a presubmit step |
 
 Plan and every v0 item: `quirq-ai/infra-config`, `docs/plan.md` and `docs/v0.md`.
