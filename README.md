@@ -58,7 +58,34 @@ qqsync validate infra/repo.toml                 # exit 1 and every problem, or P
 qqsync validate infra/repo.toml --kind pytest   # also require each kind to be one you list
 ```
 
-From Python: `qqsync.manifest.load(path)` returns the validated data or raises `ManifestError`.
+## Read and edit it: the only parser
+
+`qqsync` is the one library that reads or edits a manifest. Tools in other languages call
+`qqsync show` and read JSON; they never parse the TOML themselves.
+
+```python
+from qqsync.manifest import Manifest, load
+
+data = load("infra/repo.toml")             # validated plain data, or ManifestError with every problem
+
+m = Manifest.read("infra/repo.toml")
+m.set_pin("toolchains", "python", digest="sha256:<64 hex>", version="3.15.0")
+m.set_pin("toolchains", "node", platform="linux-x86_64", digest="sha256:<64 hex>")
+m.set_qq_version("0.2.0")
+m.add_target({"name": "lint", "kind": "pytest"}) # also set_target, remove_target
+m.write()                                   # atomic; untouched lines stay byte for byte
+```
+
+```sh
+qqsync show infra/repo.toml                                  # the manifest as JSON
+qqsync pin toolchains python --digest sha256:<64 hex> --version 3.15.0
+```
+
+Reading a manifest and writing it back unchanged gives the same bytes, CRLF and comments included.
+An edit changes only the lines it must, and `write` follows symlinks and keeps the file mode. Before
+editing, the file is read by both the standard TOML parser and the editor; if they disagree, or the
+editor cannot reproduce the file exactly, the edit is refused (reading still works). Every edit is validated, and an edit that would make the manifest
+invalid is undone and raises `ManifestError`.
 
 ## Use it
 
@@ -82,8 +109,8 @@ Python 3.14 in CI (the org pin in infra-config); the library itself needs 3.11 o
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-SYN-01 | Manifest schema `quirq-repo/1` | #2 | in review |
-| V0-SYN-02 | Parser and editor library | | not started |
+| V0-SYN-01 | Manifest schema `quirq-repo/1` | #2 | merged |
+| V0-SYN-02 | Parser and editor library | #3 | in review |
 | V0-SYN-03 | Pin check | | not started |
 | V0-SYN-04 | "No other parser" check | | not started |
 
