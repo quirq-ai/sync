@@ -7,14 +7,16 @@ manifest with anything but qqsync. Tools read it with `qqsync show` (JSON) or th
 The rule is a language-blind heuristic over each tracked file's lines:
   - A line *names the manifest* when it has `repo.toml` (also split as "repo" ".toml" or globbed as
     repo.t*), qqsync's `DEFAULT_PATH`, or a name assigned one of those at the start of a line:
-    UPPER_CASE constants in every file that does not assign the name something else, `self.x` /
-    `this.x` attributes in their own file, other names from the assignment until the next
-    reassignment or function. Argument lists and qqsync calls do not assign a path.
+    UPPER_CASE constants in every file, unless some file assigns the name something else; names
+    at the left margin in their whole file; indented names from the assignment until they are
+    reassigned or a function starts at their indent, and as `self.x`/`this.x`/`cls.x` in their
+    file. A function whose signature names the manifest names it throughout its body. Argument
+    lists and qqsync calls do not assign a path.
   - A line *reads TOML* when it has an identifier containing "toml" (tomllib, pytoml, smol-toml,
-    BurntSushi/toml, Toml.ToModel, TOML.parse), a generic data tool (yq, dasel, taplo), a name an
-    import of a TOML library binds (Python, Rust, JS, Go forms; see _import_bindings), a dynamic
-    import on a line naming the manifest, or imports the manifest file itself. The import line,
-    a `.toml` filename and the bare word TOML in prose are not readers.
+    BurntSushi/toml, Toml.ToModel, TOML.parse), a name an import of a TOML library binds (Python,
+    Rust, JS, Go forms; see _import_bindings), or imports the manifest file itself. A generic data
+    tool (yq, dasel, taplo) or a dynamic import reads only on the line naming the manifest. The
+    import line, a `.toml` filename and the bare word TOML in prose are not readers.
   - A read belongs to the nearest .toml path. A finding is a TOML-reading line that names the
     manifest, or has a line naming it within WINDOW lines and nearer than any line naming another
     .toml file (so reading your own pyproject.toml next to a docstring that mentions the manifest
@@ -70,7 +72,9 @@ IMPORT_WORD = re.compile(r"\b(import|require)\b")
 QQSYNC_INVOCATION = re.compile(r"""\bqqsync\s+(validate|show|pin|pins|fetch|verify|guard)\b[^"'`;&|)\n]*"""
                                r"""|\[\s*["']qqsync["']\s*,\s*["'](validate|show|pin|pins|fetch|verify|guard)["']"""
                                r"""[^\]\n]{0,500}\]""")
-CONSTANT = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")  # followed across files: MANIFEST, REPO_TOML
+CONSTANT = re.compile(r"^_*[A-Z][A-Z0-9_]{2,}$")  # followed across files: MANIFEST, _REPO_TOML
+IDENT = re.compile(r"(?<![\w$.])(?:(self|this|cls)\.)?([A-Za-z_][A-Za-z0-9_]*)")
+GO_IMPORT_BLOCK = re.compile(r"^\s*import\s*\(\s*$")
 WINDOW = 5
 MAX_LINE = 2000
 MAX_IMPORT = 400
@@ -129,8 +133,6 @@ def _toml_words(line: str):
 
 
 def _reads_toml(line: str) -> bool:
-    if GENERIC_READER.search(line):
-        return True
     for a, b, word in _toml_words(line):
         if word.lower() == "toml" and line[a - 1:a] == ".":
             continue  # a filename such as kinds.toml, not a library
@@ -150,7 +152,7 @@ def _names(items: str) -> set[str]:
     return out
 
 
-def _import_bindings(line: str) -> set[str] | None:
+def _import_bindings(line: str, go_import: bool = False) -> set[str] | None:
     """The names an import of a TOML library binds (`from tomllib import load`, `import tomli as T`,
     `use toml::from_str;`, `import { parse } from "smol-toml"`, `t "github.com/pelletier/go-toml"`,
     `lib = importlib.import_module(...)`). None when the line is not an import of a TOML library."""
@@ -173,8 +175,9 @@ def _import_bindings(line: str) -> set[str] | None:
         return _names(m.group(2)) if m.group(2) is not None else {m.group(1).split("::")[-1]}
     if (m := JS_IMPORT.match(line)) or (m := JS_REQUIRE.match(line)):
         return _names(m.group(1).replace("* as", "")) if TOML.search(m.group(2)) else None
-    if (m := GO_IMPORT.match(line)) and TOML.search(m.group(2)):
-        return {(m.group(1) or "").strip() or m.group(2).rstrip("/").split("/")[-1]}
+    if go_import and (m := GO_IMPORT.match(line)) and TOML.search(m.group(2)):
+        name = (m.group(1) or "").strip() or m.group(2).rstrip("/").split("/")[-1]
+        return {name} if re.fullmatch(r"\w+", name) else None
     if m := DYNAMIC_BIND.match(line):
         return {m.group(1)}
     return None
@@ -238,12 +241,16 @@ def scan(root: str | Path, allow: list[str] = (), notes: list[str] | None = None
                     kept[i] = (n, " ".join([line, *tail[:end + 1]]))
         files[rel] = kept
 
-    # Names assigned the manifest's path name it too: UPPER_CASE constants anywhere in the repo
-    # (unless a file assigns the same name something else), `self.x`/`this.x` attributes in their
-    # own file, and other names in their own file from the assignment until they are reassigned or
-    # a new function starts. An argument list or a qqsync call is not a path.
+    # Names assigned the manifest's path name it too:
+    #   - UPPER_CASE constants in every file, unless some file assigns the name something else;
+    #   - names assigned at the left margin, in their whole file (module-level paths);
+    #   - indented names from the assignment until they are reassigned or a function starts at the
+    #     same or a shallower indent; also as `self.x`/`this.x`/`cls.x` in their file (attributes).
+    # An argument list or a qqsync call is not a path. Names are looked up per identifier, so the
+    # cost is linear in the size of each file whatever the number of names.
     shared: set[str] = set()
-    assigned: dict[str, list[tuple[int, str, bool, bool]]] = {}  # rel -> (line, name, attr, manifest)
+    unshared: set[str] = set()
+    assigned: dict[str, list[tuple[int, int, str, bool, bool]]] = {}  # rel -> (line, indent, name, attr, path)
     for rel, lines in files.items():
         for n, line in lines:
             if len(line) > MAX_LINE or not (m := ASSIGNED.match(line)):
@@ -251,54 +258,76 @@ def scan(root: str | Path, allow: list[str] = (), notes: list[str] | None = None
             attr, name, rhs = bool(m.group(1)), m.group(2), m.group(3)
             names_it = (bool(MANIFEST_PATH.search(rhs)) and name != "DEFAULT_PATH" and "qqsync" not in rhs
                         and rhs[:1] not in "[{")
-            assigned.setdefault(rel, []).append((n, name, attr, names_it))
-            if names_it and not attr and CONSTANT.match(name):
-                shared.add(name)
+            indent = len(line) - len(line.lstrip())
+            assigned.setdefault(rel, []).append((n, indent, name, attr, names_it))
+            if not attr and CONSTANT.match(name):
+                (shared if names_it else unshared).add(name)
+    shared -= unshared
 
     findings = []
     for rel, lines in files.items():
         mine = assigned.get(rel, [])
-        shadowed = {name for _, name, attr, names_it in mine if not names_it and not attr}
-        constants = shared - shadowed | {name for _, name, attr, names_it in mine
-                                         if names_it and not attr and CONSTANT.match(name)}
-        attrs = {name for _, name, attr, names_it in mine if names_it and attr}
-        pattern = MANIFEST_PATH.pattern
-        if constants:
-            pattern += r"|\b(" + "|".join(sorted(map(re.escape, constants))) + r")\b"
-        if attrs:
-            pattern += r"|\b(self|this|cls)\.(" + "|".join(sorted(map(re.escape, attrs))) + r")\b"
-        names_manifest = re.compile(pattern)
-        manifest_lines = {n for n, line in lines if names_manifest.search(line)}
-        # Lower-case names, scoped from their assignment to the next reassignment or function.
-        starts = {n: name for n, name, attr, names_it in mine
-                  if names_it and not attr and not CONSTANT.match(name)}
-        if starts:
-            rebinds = {(n, name) for n, name, attr, _ in mine if not attr}
-            live: set[str] = set()
-            for n, line in lines:
-                if FUNCTION.match(line):
-                    live.clear()
-                live -= {name for name in live if (n, name) in rebinds}
-                if n in starts:
-                    live.add(starts[n])
-                if live and n not in manifest_lines and re.search(
-                        r"(?<![\w.])(" + "|".join(map(re.escape, sorted(live))) + r")\b", line):
-                    manifest_lines.add(n)
+        file_names = shared | {name for _, indent, name, attr, names_it in mine
+                               if names_it and not attr and indent == 0}
+        attrs = {name for _, indent, name, attr, names_it in mine if names_it and (attr or indent > 0)}
+        starts = {n: (indent, name) for n, indent, name, attr, names_it in mine
+                  if names_it and not attr and indent > 0 and name not in file_names}
+        rebinds: dict[int, set[str]] = {}
+        for n, _, name, attr, _ in mine:
+            if not attr:
+                rebinds.setdefault(n, set()).add(name)
+        manifest_lines: set[int] = set()
+        live: dict[str, int] = {}  # indented name -> its assignment's indent
+        body_of: int | None = None  # indent of a function whose signature names the manifest
+        for n, line in lines:
+            indent = len(line) - len(line.lstrip())
+            if line.strip() and body_of is not None and indent <= body_of:
+                body_of = None
+            if FUNCTION.match(line):
+                live = {k: v for k, v in live.items() if v < indent}
+            for name in rebinds.get(n, ()):
+                live.pop(name, None)
+            if n in starts:
+                live[starts[n][1]] = starts[n][0]
+            names_it = body_of is not None or MANIFEST_PATH.search(line) is not None
+            if not names_it:
+                for m in IDENT.finditer(line):
+                    name = m.group(2)
+                    if (m.group(1) and name in attrs) or (not m.group(1) and (name in file_names or name in live)):
+                        names_it = True
+                        break
+            if names_it:
+                manifest_lines.add(n)
+                if FUNCTION.match(line) and MANIFEST_PATH.search(line):
+                    body_of = indent  # a default argument: the whole body is near the path
         if not manifest_lines:
             continue
         manifest = sorted(manifest_lines)
         others = [n for n, line in lines if OTHER_TOML_FILE.search(line)]
-        bindings = {n: b for n, line in lines if (b := _import_bindings(line)) is not None}
+        go_import = set()
+        if rel.endswith(".go"):
+            block = False
+            for n, line in lines:
+                if GO_IMPORT_BLOCK.match(line):
+                    block = True
+                elif block and line.strip() == ")":
+                    block = False
+                elif block or line.lstrip().startswith("import "):
+                    go_import.add(n)
+        bindings = {n: b for n, line in lines if (b := _import_bindings(line, n in go_import)) is not None}
         readers = set().union(*bindings.values())
-        bound = re.compile(r"(?<![\w.$])(" + "|".join(sorted(map(re.escape, readers))) + r")\b") if readers else None
         for n, line in lines:
             if (m := IMPORT_WORD.search(line)) and "repo.toml" in line[m.end():]:
                 findings.append(Finding(rel, n, line))  # a loader importing the manifest file itself
                 break
             if n in bindings:
                 continue
-            reads = (_reads_toml(line) or (bound is not None and bound.search(line) is not None)
-                     or (n in manifest_lines and DYNAMIC_IMPORT.search(line) is not None))
+            same_line_only = n in manifest_lines and (GENERIC_READER.search(line) or DYNAMIC_IMPORT.search(line))
+            reads = _reads_toml(line) or any(not m.group(1) and m.group(2) in readers
+                                             for m in IDENT.finditer(line)) if readers else _reads_toml(line)
+            if same_line_only:
+                findings.append(Finding(rel, n, line))
+                break
             if not reads:
                 continue
             to_manifest = _nearest(manifest, n)

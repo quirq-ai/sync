@@ -122,15 +122,18 @@ that names the manifest:
 
 - **Names the manifest:** `repo.toml` (also split as `"infra/repo" ".toml"` or globbed as
   `repo.t*`), qqsync's `DEFAULT_PATH`, or a name assigned one of those: an UPPER_CASE constant
-  anywhere in the repo (so a path kept in another module still counts, unless that file assigns
-  the name something else), a `self.x`/`this.x` attribute in its own file, and any other name from
-  its assignment until it is reassigned or a new function starts.
+  (`MANIFEST`, `_MANIFEST`) anywhere in the repo, so a path kept in another module still counts,
+  unless some file assigns the same name something else; any name assigned at the left margin, in
+  its whole file; an indented name from its assignment until it is reassigned or a function starts
+  at its indent, and as `self.x`/`this.x`/`cls.x` in its file. A function whose signature names the
+  manifest (a default argument) names it throughout its body.
 - **Reads TOML:** an identifier containing `toml` (tomllib, pytoml, smol-toml, `Toml`,
-  `TOML.parse`), a data tool such as yq, a dynamic import on a line naming the manifest, or
-  importing the manifest file directly. An import of a TOML library is not a read by itself, but
+  `TOML.parse`), a data tool (yq, dasel, taplo) or a dynamic import on the line that names the
+  manifest, or importing the manifest file directly. An import of a TOML library is not a read by itself, but
   the names it binds are: Python `from tomllib import load` (also across lines in parentheses) and
   `import tomli as T`, Rust `use toml::from_str;`, JS `import { parse } from "smol-toml"` and
-  `const { parse } = require("@iarna/toml")`, Go `t "github.com/pelletier/go-toml/v2"`, and
+  `const { parse } = require("@iarna/toml")`, Go `t "github.com/pelletier/go-toml/v2"` (in a
+  `.go` import), and
   `lib = importlib.import_module(...)`.
 - **Finding:** a reading line that names the manifest, or that has a line naming it within 5 lines
   and nearer than any line naming another `.toml` file. So a module that mentions the manifest in a
@@ -157,8 +160,8 @@ plain text (sed, grep, regexes, a hand-written parser); a path or library name b
 (`f"infra/{name}.toml"`, `glob("infra/*.toml")`); a path kept under a dict or config key or as an
 argparse default (`args.manifest`); a path passed to another function and read there; a read more
 than 5 lines from the path that does not use a name assigned it; and import forms beyond those
-listed. Some config files flag on main too and need the marker: a pre-commit `check-toml` hook or
-`taplo fmt` next to the manifest's name. It is a heuristic that keeps honest code honest; a determined bypass needs
+listed. A pre-commit `check-toml` hook within 5 lines of the manifest's name is flagged and needs
+the marker. It is a heuristic that keeps honest code honest; a determined bypass needs
 review to catch.
 
 ## Use it

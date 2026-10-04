@@ -49,13 +49,24 @@ PLANTED = {
     "tools/attr.py": ('import tomllib\n\n\nclass R:\n    def __init__(self, root):\n'
                       '        self.path = root / "infra" / "repo.toml"\n' + "    x = 1\n" * 6 +
                       '    def read(self):\n        return tomllib.loads(self.path.read_text())\n'),
+    # Third review: module-level, private and class-level names, default arguments.
+    "go/load.go": ('package repo\n\nconst manifestPath = "infra/repo.toml"\n' + "// x\n" * 6 +
+                   'func Load() error {\n\t_, err := toml.DecodeFile(manifestPath, &r)\n\treturn err\n}\n'),
+    "web/load.js": ('const manifestPath = "infra/repo.toml";\n' + "// x\nlet y = 1;\n" * 4 +
+                    'function load() {\n  return TOML.parse(fs.readFileSync(manifestPath, "utf8"));\n}\n'),
+    "tools/private.py": ('import tomllib\n_MANIFEST = Path(ROOT) / "infra" / "repo.toml"\n' + "x = 1\n" * 6 +
+                         'def load():\n    return tomllib.load(open(_MANIFEST, "rb"))\n'),
+    "tools/klass.py": ('import tomllib\n\n\nclass Repo:\n    manifest = "infra/repo.toml"\n' + "    x = 1\n" * 6 +
+                       '    def load(self):\n        return tomllib.load(open(self.manifest, "rb"))\n'),
+    "tools/default.py": ('import tomllib\n\n\ndef load(path="infra/repo.toml"):\n    """Load.\n\n'
+                         '    More.\n\n    Even more.\n    """\n    return tomllib.load(open(path, "rb"))\n'),
 }
 
 # A path constant in one module, read with a TOML library in another (also an audit bypass).
 CROSS_MODULE = {
-    "tools/paths.py": 'MANIFEST = "infra/repo.toml"\n',
-    "tools/read.py": 'import tomllib\nfrom tools.paths import MANIFEST\n\n\ndef load():\n'
-                     '    return tomllib.load(open(MANIFEST, "rb"))\n',
+    "tools/paths.py": 'REPO_MANIFEST = "infra/repo.toml"\n',
+    "tools/read.py": 'import tomllib\nfrom tools.paths import REPO_MANIFEST\n\n\ndef load():\n'
+                     '    return tomllib.load(open(REPO_MANIFEST, "rb"))\n',
 }
 
 CLEAN = {
@@ -95,6 +106,14 @@ CLEAN = {
     "build.rs.d/build.rs": ('const MANIFEST: &str = "Cargo.toml";\n'
                             'let v: toml::Value = toml::from_str(&read(MANIFEST))?;\n'),
     "tests/test_list.py": 'run(["qqsync", "show", "infra/repo.toml"])\nimport tomllib\nv = tomllib.loads(x)\n',
+    # Third review: a lone string line is not a Go import; yq/taplo count only on the manifest's line.
+    "tools/watched.py": ('WATCHED = [\n    "README.md",\n    "infra/repo.toml"\n]\n\n'
+                         'print("edit infra/repo.toml")\n'),
+    "ci/fmt.sh": 'M=infra/repo.toml\nqqsync validate "$M"\ntaplo fmt --check\nyq ".x" chart.yaml\n',
+    "tool/settings.py": 'CONFIG_PATH = "tool.toml"\n',
+    "tool/paths.py": 'CONFIG_PATH = "infra/repo.toml"\n',
+    "tool/run.py": ('import tomllib\nfrom tool.settings import CONFIG_PATH\n'
+                    'cfg = tomllib.load(open(CONFIG_PATH, "rb"))\n'),
     "tools/marked.py": ('import tomllib\n'
                         'm = tomllib.load(open("infra/repo.toml", "rb"))  # qqsync-guard: allow (reviewed)\n'),
 }
@@ -154,6 +173,16 @@ def test_many_lines_stay_fast(tmp_path):
     body = 'P = "infra/repo.toml"\n' * 20_000 + "\n" * 10 + "v = tomllib.loads(x)\n" * 20_000
     spaces = 'x = "repo"' + " " * 200_000 + "\n"
     root = make_repo(tmp_path, {**CLEAN, "big.py": body, "spaces.py": spaces})
+    start = time.monotonic()
+    scan(root)
+    assert time.monotonic() - start < 5
+
+
+def test_many_names_and_files_stay_fast(tmp_path):
+    import time
+    local = "def f():\n" + "".join(f"    v{i} = 'repo.toml'\n" for i in range(8000)) + "    x = 1\n" * 8000
+    files = {f"m{i}.py": f"C{i} = 'repo.toml'\n" + "x = 1\n" * 20 for i in range(2000)}
+    root = make_repo(tmp_path, {**CLEAN, "local.py": local, **files})
     start = time.monotonic()
     scan(root)
     assert time.monotonic() - start < 5
