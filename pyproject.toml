@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qqsync"
+version = "0.1.0"
+description = "The infra/repo.toml manifest schema and its only parser, for quirq infra (qq)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1"]
+
+[project.scripts]
+qqsync = "qqsync.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+qqsync = ["*.json", "*.toml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
