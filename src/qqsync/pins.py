@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import json
 import os
+import re
 import platform as _platform
 import subprocess
 import sys
@@ -24,6 +26,7 @@ from qqsync.manifest import PIN_SECTIONS
 
 PLACEHOLDER_HEX = frozenset({"0" * 40, "0" * 64})
 CHUNK = 1 << 20
+MAX_MANIFEST = 4 << 20
 
 
 class PinError(Exception):
@@ -157,18 +160,96 @@ class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
 
 _OPENER = urllib.request.build_opener(_HttpsOnlyRedirects)
 
+OCI_ACCEPT = ", ".join(["application/vnd.oci.image.manifest.v1+json",
+                        "application/vnd.docker.distribution.manifest.v2+json"])
+OCI_SOURCE = re.compile(r"^oci://(?P<registry>[^/@]+)/(?P<repository>[^@]+?)(?:@(?P<manifest>sha256:[0-9a-f]{64}))?$")
+
+
+def oci_parts(source: str) -> tuple[str, str, str | None]:
+    """registry, repository and the optional manifest digest of oci://REGISTRY/REPOSITORY[@sha256:...]."""
+    m = OCI_SOURCE.match(source)
+    if not m:
+        raise PinError(f"{source!r} is not oci://REGISTRY/REPOSITORY[@sha256:<64 hex>]")
+    return m["registry"], m["repository"], m["manifest"]
+
+
+def _oci_open(url: str, accept: str | None, token: list[str]):
+    """Open a registry URL, answering one bearer-token challenge anonymously (public packages only).
+
+    The token is never sent on to the storage host a blob redirects to.
+    """
+    for attempt in range(2):
+        request = urllib.request.Request(url, headers={"Accept": accept} if accept else {})
+        if token:
+            request.add_unredirected_header("Authorization", f"Bearer {token[0]}")
+        try:
+            return _OPENER.open(request, timeout=120)
+        except urllib.error.HTTPError as e:
+            challenge = e.headers.get("WWW-Authenticate", "") if e.headers else ""
+            if e.code != 401 or attempt or not challenge.lower().startswith("bearer "):
+                hint = " (is the package public?)" if e.code in (401, 403) else ""
+                raise PinError(f"cannot fetch {url}: HTTP {e.code}{hint}") from None
+            token[:] = [_anonymous_token(challenge)]
+    raise AssertionError("unreachable")
+
+
+def _anonymous_token(challenge: str) -> str:
+    fields = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+    if "realm" not in fields:
+        raise PinError(f"registry asked for a token without a realm: {challenge!r}")
+    query = urllib.parse.urlencode({k: fields[k] for k in ("service", "scope") if k in fields})
+    sep = "&" if "?" in fields["realm"] else "?"
+    with _OPENER.open(f"{fields['realm']}{sep}{query}", timeout=60) as r:
+        body = json.load(r)
+    token = body.get("token") or body.get("access_token")
+    if not token:
+        raise PinError(f"registry token endpoint {fields['realm']} returned no token")
+    return token
+
+
+def _open_oci_layer(pin: Pin):
+    """The pinned layer's blob, after checking the named manifest (if any) lists it.
+
+    `oci://REGISTRY/REPOSITORY@sha256:<manifest>` with digest `sha256:<layer>`: the manifest's bytes
+    must hash to its digest and list the layer, so a pin cannot pair one artifact's manifest with
+    another's bytes. The layer's bytes are then checked against the pin like any download.
+    """
+    registry, repository, manifest_digest = oci_parts(pin.source)
+    # Plain http only for a registry on this machine (tests, a local mirror), and only when asked.
+    local = registry.rsplit(":", 1)[0] in ("127.0.0.1", "localhost", "[::1]")
+    scheme = "http" if local and os.environ.get("QQ_OCI_SCHEME") == "http" else "https"
+    base = f"{scheme}://{registry}/v2/{repository}"
+    token: list[str] = []
+    if manifest_digest:
+        with _oci_open(f"{base}/manifests/{manifest_digest}", OCI_ACCEPT, token) as r:
+            raw = r.read(MAX_MANIFEST + 1)
+        if len(raw) > MAX_MANIFEST:
+            raise PinError(f"{pin.label}: manifest {manifest_digest} is larger than {MAX_MANIFEST} bytes")
+        if "sha256:" + hashlib.sha256(raw).hexdigest() != manifest_digest:
+            raise PinMismatch(f"{pin.label}: the registry's manifest does not hash to {manifest_digest}")
+        try:
+            layers = [layer.get("digest") for layer in json.loads(raw).get("layers", [])]
+        except (ValueError, AttributeError):
+            raise PinError(f"{pin.label}: manifest {manifest_digest} is not an image manifest") from None
+        if pin.digest not in layers:
+            raise PinMismatch(f"{pin.label}: manifest {manifest_digest} has no layer {pin.digest}")
+    return _oci_open(f"{base}/blobs/{pin.digest}", None, token)
+
+
 def fetch(pin: Pin, dest: str | Path) -> Path:
     """Download a sha256 pin's source to `dest`, verified. On a mismatch nothing is left at `dest`.
 
-    Sources are https:// or file:// URLs (file:// is for tests and local mirrors). Commit pins are
-    checked out by the qq CLI and verified with verify_checkout.
+    Sources are https:// URLs, oci:// registry layers (see _open_oci_layer) or file:// URLs (for
+    tests and local mirrors). Commit pins are checked out by the qq CLI and verified with
+    verify_checkout.
     """
     if pin.algorithm != "sha256":
         raise PinError(f"{pin.label}: only sha256 pins are fetched here; check out commit pins and "
                        "use verify_checkout")
     scheme = urllib.parse.urlsplit(pin.source).scheme
-    if scheme not in ("https", "file"):
-        raise PinError(f"{pin.label}: cannot fetch {pin.source!r}; sources must be https:// or file:// URLs")
+    if scheme not in ("https", "file", "oci"):
+        raise PinError(f"{pin.label}: cannot fetch {pin.source!r}; sources must be https://, oci:// "
+                       "or file:// URLs")
     dest = Path(dest)
     if dest.is_dir():
         raise PinError(f"{pin.label}: destination {dest} is a directory; name the file to write")
@@ -177,7 +258,8 @@ def fetch(pin: Pin, dest: str | Path) -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".part")
         sha = hashlib.sha256()
-        with os.fdopen(fd, "wb") as out, _OPENER.open(pin.source, timeout=60) as resp:
+        opened = _open_oci_layer(pin) if scheme == "oci" else _OPENER.open(pin.source, timeout=60)
+        with os.fdopen(fd, "wb") as out, opened as resp:
             while chunk := resp.read(CHUNK):
                 sha.update(chunk)
                 out.write(chunk)
@@ -189,6 +271,10 @@ def fetch(pin: Pin, dest: str | Path) -> Path:
         os.umask(umask)
         os.chmod(tmp, 0o666 & ~umask)  # mkstemp makes 0600; give the file normal permissions
         os.replace(tmp, dest)
+    except PinError:
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+        raise
     except (OSError, ValueError, http.client.HTTPException) as e:  # URLError is an OSError
         if tmp:
             Path(tmp).unlink(missing_ok=True)
@@ -202,4 +288,4 @@ def fetch(pin: Pin, dest: str | Path) -> Path:
 
 
 __all__ = ["Pin", "PinError", "PinMismatch", "current_platform", "fetch", "file_digest", "find_pin",
-           "iter_pins", "placeholders", "verify_checkout", "verify_file"]
+           "iter_pins", "oci_parts", "placeholders", "verify_checkout", "verify_file"]

@@ -1,5 +1,8 @@
 import hashlib
+import json
 import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -7,7 +10,7 @@ import pytest
 from qqsync.cli import main
 from qqsync.manifest import Manifest
 from qqsync.pins import (Pin, PinError, PinMismatch, current_platform, fetch, file_digest, find_pin,
-                         iter_pins, placeholders, verify_checkout, verify_file)
+                         iter_pins, oci_parts, placeholders, verify_checkout, verify_file)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -53,7 +56,7 @@ def test_fetch_mismatch_keeps_an_existing_file(tmp_path, artifact):
 
 
 def test_fetch_refuses_other_schemes_and_commit_pins(tmp_path):
-    with pytest.raises(PinError, match="https:// or file://"):
+    with pytest.raises(PinError, match="sources must be https://, oci:// or file://"):
         fetch(Pin("deps", "d", None, "http://example.invalid/x", sha(b"x")), tmp_path / "x")
     with pytest.raises(PinError, match="only sha256 pins"):
         fetch(Pin("deps", "d", None, "https://example.invalid/x", "git:" + "a" * 40), tmp_path / "x")
@@ -131,7 +134,11 @@ def test_placeholders():
 
 @pytest.mark.parametrize("path", sorted(FIXTURES.glob("*.repo.toml")), ids=lambda p: p.name)
 def test_product_fixtures_pin_real_digests(path):
-    assert placeholders(Manifest.read(path).data) == []
+    data = Manifest.read(path).data
+    assert placeholders(data) == []
+    for pin in iter_pins(data):  # toolchains pins: a manifest in the source, a layer as the digest
+        _, _, manifest = oci_parts(pin.source)
+        assert manifest and manifest != pin.digest
 
 
 def test_current_platform_shape():
@@ -189,3 +196,111 @@ def test_redirects_only_to_https():
     with pytest.raises(urllib.error.URLError, match="only https"):
         _HttpsOnlyRedirects().redirect_request(req, None, 302, "Found", {}, "http://example.invalid/b")
     assert _HttpsOnlyRedirects().redirect_request(req, None, 302, "Found", {}, "https://example.invalid/b")
+
+
+# --- oci:// pins -----------------------------------------------------------------------------
+
+class Registry(BaseHTTPRequestHandler):
+    """A minimal OCI registry: manifests and blobs by digest, optionally behind an anonymous token."""
+    manifests: dict = {}
+    blobs: dict = {}
+    want_token = False
+
+    def do_GET(self):
+        if self.path.startswith("/token"):
+            return self._send(200, json.dumps({"token": "anon"}).encode())
+        if self.want_token and self.headers.get("Authorization") != "Bearer anon":
+            self.send_response(401)
+            realm = f"http://{self.headers['Host']}/token"
+            self.send_header("WWW-Authenticate", f'Bearer realm="{realm}",service="reg",scope="pull"')
+            self.end_headers()
+            return
+        kind, _, digest = self.path.rpartition("/")
+        store = self.manifests if kind.endswith("/manifests") else self.blobs
+        if digest in store:
+            return self._send(200, store[digest])
+        self._send(404, b"not found")
+
+    def _send(self, code, body):
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Registry)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("QQ_OCI_SCHEME", "http")
+    Registry.want_token = False
+    layer, other = b"toolchain layer bytes", b"some other artifact"
+    manifest = json.dumps({"schemaVersion": 2, "layers": [{"digest": sha(layer)}]}).encode()
+    Registry.manifests = {sha(manifest): manifest}
+    Registry.blobs = {sha(layer): layer, sha(other): other}
+    yield {"host": f"127.0.0.1:{server.server_address[1]}", "layer": layer, "other": other,
+           "manifest": sha(manifest)}
+    server.shutdown()
+
+
+def oci_pin(reg, digest, with_manifest=True):
+    source = f"oci://{reg['host']}/quirq-ai/toolchains/tc" + (f"@{reg['manifest']}" if with_manifest else "")
+    return Pin("toolchains", "tc", "linux-x86_64", source, digest)
+
+
+def test_oci_fetch_checks_manifest_and_layer(tmp_path, registry):
+    out = fetch(oci_pin(registry, sha(registry["layer"])), tmp_path / "tc.tar")
+    assert out.read_bytes() == registry["layer"]
+    Registry.want_token = True  # an anonymous bearer token is fetched and used
+    assert fetch(oci_pin(registry, sha(registry["layer"])), tmp_path / "again.tar").exists()
+
+
+def test_oci_layer_not_in_manifest_is_refused(tmp_path, registry):
+    with pytest.raises(PinMismatch, match="has no layer"):
+        fetch(oci_pin(registry, sha(registry["other"])), tmp_path / "x")
+    assert list(tmp_path.iterdir()) == []
+    # Without a manifest in the source, the layer is only checked against its own digest.
+    assert fetch(oci_pin(registry, sha(registry["other"]), with_manifest=False), tmp_path / "y").exists()
+
+
+def test_oci_tampered_manifest_and_blob(tmp_path, registry):
+    digest = registry["manifest"]
+    Registry.manifests[digest] = b'{"layers": []}'
+    with pytest.raises(PinMismatch, match="does not hash to"):
+        fetch(oci_pin(registry, sha(registry["layer"])), tmp_path / "x")
+    Registry.manifests[digest] = json.dumps({"schemaVersion": 2, "layers": [{"digest": sha(registry["layer"])}]}).encode()
+    assert sha(Registry.manifests[digest]) == digest
+    Registry.blobs[sha(registry["layer"])] = b"tampered"
+    with pytest.raises(PinMismatch, match="refusing to use it"):
+        fetch(oci_pin(registry, sha(registry["layer"])), tmp_path / "x")
+    assert not (tmp_path / "x").exists()
+
+
+def test_oci_errors(tmp_path, registry):
+    with pytest.raises(PinError, match="HTTP 404"):
+        fetch(oci_pin(registry, sha(b"missing"), with_manifest=False), tmp_path / "x")
+    with pytest.raises(PinError, match="is not oci://"):
+        fetch(Pin("toolchains", "tc", None, "oci://no-repository", sha(b"x")), tmp_path / "x")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_oci_plain_http_only_for_this_machine(monkeypatch, tmp_path):
+    monkeypatch.setenv("QQ_OCI_SCHEME", "http")
+    seen = []
+    monkeypatch.setattr("qqsync.pins._oci_open", lambda url, *a: seen.append(url) or (_ for _ in ()).throw(PinError("stop")))
+    with pytest.raises(PinError):
+        fetch(Pin("toolchains", "tc", None, "oci://registry.example/r", sha(b"x")), tmp_path / "x")
+    assert seen == ["https://registry.example/v2/r/blobs/" + sha(b"x")]
+
+
+def test_cli_fetch_oci_fixture_shape(tmp_path, registry):
+    path = tmp_path / "repo.toml"
+    path.write_text('schema = "quirq-repo/1"\n[toolchains.tc]\n'
+                    f'platforms.linux-x86_64 = {{ source = "oci://{registry["host"]}/t/tc@{registry["manifest"]}", '
+                    f'digest = "{sha(registry["layer"])}" }}\n[[targets]]\nname = "a"\nkind = "k"\n')
+    assert main(["fetch", "toolchains", "tc", "--platform", "linux-x86_64", "--dest", str(tmp_path / "tc"),
+                 "--manifest", str(path)]) == 0
+    assert (tmp_path / "tc").read_bytes() == registry["layer"]
