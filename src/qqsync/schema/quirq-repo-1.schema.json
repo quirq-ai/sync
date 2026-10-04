@@ -89,7 +89,7 @@
       }
     },
     "source": {
-      "description": "Where the pinned artifact is fetched from. Opaque to sync: the fetcher interprets the scheme.",
+      "description": "Where the pinned bytes come from: https://, oci://REGISTRY/REPOSITORY[@sha256:<manifest>], file://, or a git URL for a git: pin. qqsync.pins fetches the first three.",
       "type": "string",
       "minLength": 1,
       "pattern": "^\\S+$",
@@ -98,7 +98,7 @@
       }
     },
     "digest": {
-      "description": "The content pin. sha256:<64 hex> for the fetched bytes (a file, or an OCI image manifest), git:<40 or 64 hex> for a commit.",
+      "description": "The content pin. sha256:<64 hex> for the fetched bytes (a file, or for oci://REGISTRY/REPOSITORY@sha256:<manifest> the layer that manifest lists), git:<40 or 64 hex> for a commit.",
       "type": "string",
       "pattern": "^(sha256:[0-9a-f]{64}|git:([0-9a-f]{40}|[0-9a-f]{64}))$",
       "not": {

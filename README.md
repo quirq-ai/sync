@@ -96,14 +96,22 @@ nothing at the destination (an older good copy stays), and the build stops.
 
 ```sh
 qqsync pins [--strict] infra/repo.toml                     # list pins; --strict rejects all-zero placeholders
-qqsync fetch toolchains python --dest .qq/python.tar.zst   # https:// or file:// sources, sha256 pins
+qqsync fetch toolchains python --dest .qq/python.tar.zst   # https://, oci:// or file:// sources, sha256 pins
 qqsync verify toolchains python .qq/python.tar.zst         # a file against a sha256 pin
 qqsync verify deps recipes .qq/recipes                     # a checkout: pinned commit, tracked files unchanged
 ```
 
-Redirects are followed only to `https://`. Toolchains from quirq-ai/toolchains are OCI images
-(`source = "oci://ghcr.io/quirq-ai/toolchains/<name>"`, digest = the image manifest digest); the `qq`
-CLI pulls those by digest, so `qqsync fetch` refuses `oci://` sources. Per-platform pins default to this machine's platform (`linux-x86_64`, `macos-arm64`, ...);
+Redirects are followed only to `https://`.
+
+| Source | Digest | Fetched and checked as |
+|---|---|---|
+| `https://…`, `file://…` | `sha256:` | the bytes at that URL |
+| `oci://REGISTRY/REPO@sha256:<manifest>` | `sha256:<layer>` | the manifest must hash to its digest and list the layer; the layer's bytes must hash to the pin (how quirq-ai/toolchains publishes) |
+| `oci://REGISTRY/REPO` | `sha256:<layer>` | that layer's bytes |
+| a git URL | `git:<commit>` | checked out by `qq`, then `verify` |
+
+Registry packages must be public: `fetch` asks the registry for an anonymous token and never sends
+credentials. Per-platform pins default to this machine's platform (`linux-x86_64`, `macos-arm64`, ...);
 pass `--platform` to pick another. Commit pins are checked out by the `qq` CLI and verified with
 `verify`.
 
