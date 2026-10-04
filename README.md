@@ -195,3 +195,7 @@ Python 3.14 in CI (the org pin in infra-config); the library itself needs 3.11 o
 | V0-SYN-04 | "No other parser" check | #5 | merged; done-when shown by a presubmit step |
 
 Plan and every v0 item: `quirq-ai/infra-config`, `docs/plan.md` and `docs/v0.md`.
+
+## Licence
+
+Apache-2.0; see [LICENSE](LICENSE).
