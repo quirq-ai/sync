@@ -87,6 +87,24 @@ editing, the file is read by both the standard TOML parser and the editor; if th
 editor cannot reproduce the file exactly, the edit is refused (reading still works). Every edit is validated, and an edit that would make the manifest
 invalid is undone and raises `ManifestError`.
 
+## Pins: checked on every fetch
+
+Every toolchain and dependency is pinned by digest (the schema requires it). `qqsync.pins` checks
+fetched content against the pin: `fetch` downloads to a temporary file, hashes while it downloads,
+and moves the file into place only when the digest matches. A mismatch raises `PinMismatch`, leaves
+nothing at the destination (an older good copy stays), and the build stops.
+
+```sh
+qqsync pins [--strict] infra/repo.toml                     # list pins; --strict rejects all-zero placeholders
+qqsync fetch toolchains python --dest .qq/python.tar.zst   # https:// or file:// sources, sha256 pins
+qqsync verify toolchains python .qq/python.tar.zst         # a file against a sha256 pin
+qqsync verify deps recipes .qq/recipes                     # a checkout: pinned commit, tracked files unchanged
+```
+
+Redirects are followed only to `https://`. Per-platform pins default to this machine's platform (`linux-x86_64`, `macos-arm64`, ...);
+pass `--platform` to pick another. Commit pins are checked out by the `qq` CLI and verified with
+`verify`.
+
 ## Use it
 
 Other qq repos depend on `sync` by pinned commit, never by copying code:
@@ -110,8 +128,8 @@ Python 3.14 in CI (the org pin in infra-config); the library itself needs 3.11 o
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-SYN-01 | Manifest schema `quirq-repo/1` | #2 | merged |
-| V0-SYN-02 | Parser and editor library | #3 | in review |
-| V0-SYN-03 | Pin check | | not started |
+| V0-SYN-02 | Parser and editor library | #3 | merged; done-when waits on V0-DEP-02 and V0-ROL-01 adopting it |
+| V0-SYN-03 | Pin check | #4 | in review |
 | V0-SYN-04 | "No other parser" check | | not started |
 
 Plan and every v0 item: `quirq-ai/infra-config`, `docs/plan.md` and `docs/v0.md`.

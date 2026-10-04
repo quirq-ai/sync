@@ -32,3 +32,16 @@ jobs:
           echo "kinds: $kinds"
           if [ -z "$kinds" ]; then echo "::error::infra-config listed no kinds"; exit 1; fi
           qqsync validate tests/fixtures/xo-space.repo.toml tests/fixtures/innernet.repo.toml $kinds
+      - name: "V0-SYN-03 done-when: a fetched artifact that does not match its pin fails the build"
+        run: |
+          d=$(mktemp -d)
+          printf 'tampered toolchain' > "$d/tc.tar"
+          printf '%s\n' 'schema = "quirq-repo/1"' '[toolchains.tc]' "source = \"file://$d/tc.tar\"" \
+            "digest = \"sha256:$(printf 'pinned toolchain' | sha256sum | cut -d' ' -f1)\"" \
+            '[[targets]]' 'name = "a"' 'kind = "k"' > "$d/repo.toml"
+          if qqsync fetch toolchains tc --dest "$d/out/tc.tar" --manifest "$d/repo.toml"; then
+            echo "::error::a fetch that does not match its pin succeeded"; exit 1
+          fi
+          test ! -e "$d/out/tc.tar"
+          printf 'pinned toolchain' > "$d/tc.tar"
+          qqsync fetch toolchains tc --dest "$d/out/tc.tar" --manifest "$d/repo.toml"

@@ -6,6 +6,13 @@
     qqsync pin SECTION NAME --digest D [--source S] [--version V] [--platform P] [--manifest PATH]
                                                    set one toolchain or dependency pin, keeping the
                                                    rest of the file byte for byte.
+    qqsync pins [PATH] [--strict]                  list every pin; --strict also rejects
+                                                   placeholder (all-zero) digests.
+    qqsync fetch SECTION NAME --dest FILE [--platform P] [--manifest PATH]
+                                                   download a pinned artifact; fails, leaving
+                                                   nothing behind, unless it matches its pin.
+    qqsync verify SECTION NAME PATH [--platform P] [--manifest PATH]
+                                                   check a fetched file or checkout against its pin.
 
 PATH defaults to infra/repo.toml. Exit 1 on any problem, with every problem printed.
 """
@@ -18,6 +25,7 @@ import sys
 from qqsync import __version__
 from qqsync.errors import ManifestError
 from qqsync.manifest import DEFAULT_PATH, PIN_SECTIONS, Manifest
+from qqsync.pins import PinError, fetch, find_pin, iter_pins, placeholders, verify_checkout, verify_file
 
 
 def _validate(args: argparse.Namespace) -> int:
@@ -48,6 +56,30 @@ def _pin(args: argparse.Namespace) -> int:
     return 0
 
 
+def _pins(args: argparse.Namespace) -> int:
+    data = Manifest.read(args.path).data
+    for pin in iter_pins(data):
+        print(f"{pin.label}\t{pin.digest}\t{pin.source}")
+    problems = placeholders(data) if args.strict else []
+    for problem in problems:
+        print(f"{args.path}: {problem}", file=sys.stderr)
+    return 1 if problems else 0
+
+
+def _fetch(args: argparse.Namespace) -> int:
+    pin = find_pin(Manifest.read(args.manifest).data, args.section, args.name, args.platform)
+    fetch(pin, args.dest)
+    print(f"{pin.label}: {args.dest} matches {pin.digest}")
+    return 0
+
+
+def _verify(args: argparse.Namespace) -> int:
+    pin = find_pin(Manifest.read(args.manifest).data, args.section, args.name, args.platform)
+    (verify_checkout if pin.algorithm == "git" else verify_file)(pin, args.path)
+    print(f"{pin.label}: {args.path} matches {pin.digest}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="qqsync", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -74,9 +106,33 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--manifest", default=DEFAULT_PATH)
     p.set_defaults(run=_pin)
 
+    ps = sub.add_parser("pins", help="list every pin")
+    ps.add_argument("path", nargs="?", default=DEFAULT_PATH)
+    ps.add_argument("--strict", action="store_true", help="reject placeholder (all-zero) digests")
+    ps.set_defaults(run=_pins)
+
+    f = sub.add_parser("fetch", help="download a pinned artifact and verify it")
+    f.add_argument("section", choices=PIN_SECTIONS)
+    f.add_argument("name")
+    f.add_argument("--dest", required=True)
+    f.add_argument("--platform", help="for per-platform pins (default: this machine)")
+    f.add_argument("--manifest", default=DEFAULT_PATH)
+    f.set_defaults(run=_fetch)
+
+    vf = sub.add_parser("verify", help="check a fetched file or checkout against its pin")
+    vf.add_argument("section", choices=PIN_SECTIONS)
+    vf.add_argument("name")
+    vf.add_argument("path")
+    vf.add_argument("--platform", help="for per-platform pins (default: this machine)")
+    vf.add_argument("--manifest", default=DEFAULT_PATH)
+    vf.set_defaults(run=_verify)
+
     args = parser.parse_args(argv)
     try:
         return args.run(args)
+    except PinError as e:
+        print(e, file=sys.stderr)
+        return 1
     except ManifestError as e:
         print(e, file=sys.stderr)
         return 1
