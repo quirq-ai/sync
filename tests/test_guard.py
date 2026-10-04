@@ -21,6 +21,23 @@ PLANTED = {
     "src/Read.java": 'Toml m = new Toml().read(new File("infra/repo.toml"));\n',
     "ci/pins.sh": "yq -oy infra/repo.toml\n",
     "web/manifest.ts": 'import manifest from "../infra/repo.toml";\n',
+    # The audit's bypasses of the first version (wave1-sync-toolchains.md, S-2).
+    "tools/trailing_note.py": ('import tomllib\n'
+                               'm = tomllib.load(open("infra/repo.toml", "rb"))  # see qqsync show\n'),
+    "web/semi.js": 'const TOML = require("@iarna/toml")\n;TOML.parse(fs.readFileSync("infra/repo.toml", "utf8"))\n',
+    "tools/star.py": 'import tomllib\n*rest, = tomllib.load(open("infra/repo.toml", "rb")).items()\n',
+    "tools/split.py": 'import tomllib\nm = tomllib.load(open("infra/repo" ".toml", "rb"))\n',
+    "tools/glob.py": ('import glob, tomllib\n'
+                      'm = [tomllib.load(open(p, "rb")) for p in glob.glob("infra/repo.t*")]\n'),
+    "tools/dynamic.py": ('import importlib\nlib = importlib.import_module("tom" + "llib")\n'
+                         'm = lib.load(open("infra/repo.toml", "rb"))\n'),
+}
+
+# A path constant in one module, read with a TOML library in another (also an audit bypass).
+CROSS_MODULE = {
+    "tools/paths.py": 'MANIFEST = "infra/repo.toml"\n',
+    "tools/read.py": 'import tomllib\nfrom tools.paths import MANIFEST\n\n\ndef load():\n'
+                     '    return tomllib.load(open(MANIFEST, "rb"))\n',
 }
 
 CLEAN = {
@@ -32,6 +49,13 @@ CLEAN = {
     ".github/workflows/ci.yml": "      - run: pip install tomli qqsync\n      - run: qqsync validate infra/repo.toml\n",
     "package.json": '{"scripts": {"pins": "qqsync show infra/repo.toml"}, "dependencies": {"smol-toml": "1"}}\n',
     "tools/note.py": "# don't parse repo.toml yourself; toml readers drift\nURL = 'https://toml.io'\n",
+    # The audit's false positive: mentions the manifest, reads its own pyproject.toml.
+    "tools/version.py": ('"""Prints the version.\n\nThe pins live in infra/repo.toml; read them with qqsync.\n"""\n'
+                         'import tomllib\n\n\ndef version():\n'
+                         '    with open("pyproject.toml", "rb") as f:\n'
+                         '        return tomllib.load(f)["project"]["version"]\n'),
+    "tools/marked.py": ('import tomllib\n'
+                        'm = tomllib.load(open("infra/repo.toml", "rb"))  # qqsync-guard: allow (reviewed)\n'),
 }
 
 
@@ -53,6 +77,11 @@ def test_clean_repo_passes(tmp_path):
 def test_planted_parser_is_found(tmp_path, rel):
     root = make_repo(tmp_path, {**CLEAN, rel: PLANTED[rel]})
     assert [f.path for f in scan(root)] == [rel]
+
+
+def test_path_constant_in_another_module(tmp_path):
+    root = make_repo(tmp_path, {**CLEAN, **CROSS_MODULE})
+    assert [(f.path, f.line) for f in scan(root)] == [("tools/read.py", 6)]
 
 
 def test_untracked_files_are_ignored_in_a_checkout(tmp_path):
@@ -89,7 +118,7 @@ def test_cli_guard(tmp_path, capsys):
     assert main(["guard", str(clean)]) == 0
     planted = make_repo(tmp_path / "planted", {**CLEAN, "scripts/pins.py": PLANTED["scripts/pins.py"]})
     assert main(["guard", str(planted)]) == 1
-    assert "scripts/pins.py:1: parses repo.toml outside qqsync" in capsys.readouterr().err
+    assert "scripts/pins.py:3: parses repo.toml outside qqsync" in capsys.readouterr().err
 
 
 def test_this_repo_has_one_parser():

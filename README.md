@@ -109,21 +109,36 @@ pass `--platform` to pick another. Commit pins are checked out by the `qq` CLI a
 
 ## No other parser: `qqsync guard`
 
-Any repo's presubmit can run `qqsync guard`. It fails when a tracked file both names the manifest
-(`repo.toml`, or qqsync's `DEFAULT_PATH`) and reads TOML some other way: any identifier containing
-`toml` (tomllib, pytoml, smol-toml, `Toml`, `TOML.parse`), a data tool such as yq on the manifest,
-or importing the manifest directly. Comment lines and `qqsync <command>` lines don't count, nor do
-`.toml` filenames or the word TOML in prose. Markdown, plain text and TOML data files are skipped. The fix is
-always the same: read the manifest with `qqsync show` (JSON) or the qqsync library.
+Any repo's presubmit can run `qqsync guard`. It fails when a tracked file reads TOML near a place
+that names the manifest:
+
+- **Names the manifest:** `repo.toml` (also split as `"infra/repo" ".toml"` or globbed as
+  `repo.t*`), qqsync's `DEFAULT_PATH`, or a constant that any file in the repo assigns from one of
+  those, so a path kept in another module still counts.
+- **Reads TOML:** an identifier containing `toml` (tomllib, pytoml, smol-toml, `Toml`,
+  `TOML.parse`), a data tool such as yq, a dynamic import (`import_module`), or importing the
+  manifest file directly. A plain `import tomllib` line is not a read by itself.
+- **Finding:** a reading line that names the manifest, or that has a line naming it within 5 lines
+  and nearer than any line naming another `.toml` file. So a module that mentions the manifest in a
+  docstring and reads its own `pyproject.toml` passes.
+
+Whole-line comments, the `qqsync <command> ...` part of a line, `.toml` filenames and the word TOML
+in prose don't count. Markdown, plain text and TOML data files are skipped. The fix is always the
+same: read the manifest with `qqsync show` (JSON) or the qqsync library.
 
 ```sh
 python -m pip install "qqsync @ git+https://github.com/quirq-ai/sync@<commit>"
-qqsync guard .        # exit 1 with file:line for each second parser, or PASS
+qqsync guard .                          # exit 1 with file:line for each second parser, or PASS
+qqsync guard . --allow 'vendor/*'       # skip reviewed paths (keep the list in your presubmit)
 ```
 
-`--allow GLOB` exists only for this repo's own library and test samples. The check is a heuristic;
-a parser that reads the file with plain text tools is not caught yet (`TODO(expert)` in
-`src/qqsync/guard.py`).
+A reviewed line can be exempted with a `qqsync-guard: allow` comment on it. Both escapes belong in
+code review, like any other presubmit exemption.
+
+What it does not catch (`TODO(expert)` in `src/qqsync/guard.py`): a parser that reads the file as
+plain text (sed, grep, regexes, a hand-written parser), and a path or library name built at run time
+beyond the forms above. It is a heuristic that keeps honest code honest; a determined bypass needs
+review to catch.
 
 ## Use it
 

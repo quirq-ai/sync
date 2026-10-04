@@ -61,6 +61,6 @@ jobs:
           code=$?
           set -e
           cat "$d/err"
-          if [ "$code" -ne 1 ] || ! grep -q '^planted.py:1: parses repo.toml outside qqsync' "$d/err"; then
+          if [ "$code" -ne 1 ] || ! grep -qE '^planted.py:[0-9]+: parses repo.toml outside qqsync' "$d/err"; then
             echo "::error::the guard did not reject the planted parser (exit $code)"; exit 1
           fi
