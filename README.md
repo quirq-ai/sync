@@ -98,10 +98,10 @@ nothing at the destination (an older good copy stays), and the build stops.
 qqsync pins [--strict] infra/repo.toml                     # list pins; --strict rejects all-zero placeholders
 qqsync fetch toolchains python --dest .qq/python.tar.zst   # https:// or file:// sources, sha256 pins
 qqsync verify toolchains python .qq/python.tar.zst         # a file against a sha256 pin
-qqsync verify deps recipes .qq/recipes                     # a checkout against a git: pin
+qqsync verify deps recipes .qq/recipes                     # a checkout: pinned commit, tracked files unchanged
 ```
 
-Per-platform pins default to this machine's platform (`linux-x86_64`, `macos-arm64`, ...);
+Redirects are followed only to `https://`. Per-platform pins default to this machine's platform (`linux-x86_64`, `macos-arm64`, ...);
 pass `--platform` to pick another. Commit pins are checked out by the `qq` CLI and verified with
 `verify`.
 

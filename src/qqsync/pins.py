@@ -7,11 +7,13 @@ place when the digest matches. Anything else raises PinMismatch, and the build s
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import platform as _platform
 import subprocess
 import sys
 import tempfile
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Iterator
@@ -103,27 +105,57 @@ def verify_file(pin: Pin, path: str | Path) -> None:
     """Raise PinMismatch unless the file at `path` has exactly the pinned digest."""
     if pin.algorithm != "sha256":
         raise PinError(f"{pin.label}: a {pin.algorithm} pin names a commit, not a file; use verify_checkout")
-    actual = file_digest(path)
+    try:
+        actual = file_digest(path)
+    except OSError as e:
+        raise PinError(f"{pin.label}: cannot read {path}: {e.strerror or e}") from None
     if actual != pin.digest:
         raise PinMismatch(f"{pin.label}: {path} has digest {actual}, but the manifest pins {pin.digest}")
 
 
 def verify_checkout(pin: Pin, path: str | Path) -> None:
-    """Raise PinMismatch unless the checkout at `path` is at exactly the pinned commit."""
+    """Raise PinMismatch unless the checkout at `path` is exactly the pinned commit, unmodified.
+
+    Untracked files (build output, caches) are allowed; changes to tracked files are not.
+    """
     if pin.algorithm != "git":
         raise PinError(f"{pin.label}: a {pin.algorithm} pin names file bytes, not a commit; use verify_file")
-    try:
-        out = subprocess.run(["git", "-C", str(path), "rev-parse", "--verify", "HEAD^{commit}"],
-                             capture_output=True, text=True, check=True).stdout.strip()
-    except (OSError, subprocess.CalledProcessError) as e:
-        detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) else str(e)
-        raise PinError(f"{pin.label}: cannot read the commit at {path}: {detail}") from None
+    path = Path(path).resolve()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}  # GIT_DIR would override -C
+
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True,
+                                  check=True, env=env).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as e:
+            detail = e.stderr.strip() if isinstance(e, subprocess.CalledProcessError) else str(e)
+            raise PinError(f"{pin.label}: cannot read the checkout at {path}: {detail}") from None
+
+    top = git("rev-parse", "--show-toplevel")
+    if Path(top).resolve() != path:
+        raise PinError(f"{pin.label}: {path} is not the root of a checkout (it is inside {top})")
+    head = git("rev-parse", "--verify", "HEAD^{commit}")
     expected = pin.digest.split(":", 1)[1]
-    if out != expected:
-        raise PinMismatch(f"{pin.label}: {path} is at commit {out}, but the manifest pins {expected}")
+    if head != expected:
+        raise PinMismatch(f"{pin.label}: {path} is at commit {head}, but the manifest pins {expected}")
+    changed = git("status", "--porcelain", "--untracked-files=no")
+    if changed:
+        raise PinMismatch(f"{pin.label}: {path} is at the pinned commit but tracked files were changed:\n"
+                          + changed)
 
 
 # --- fetching ------------------------------------------------------------------------------------
+
+class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to https: the digest protects the bytes, this protects the request."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme.lower() != "https":
+            raise urllib.error.URLError(f"refusing a redirect to {newurl}; only https is followed")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpsOnlyRedirects)
 
 def fetch(pin: Pin, dest: str | Path) -> Path:
     """Download a sha256 pin's source to `dest`, verified. On a mismatch nothing is left at `dest`.
@@ -138,11 +170,14 @@ def fetch(pin: Pin, dest: str | Path) -> Path:
     if scheme not in ("https", "file"):
         raise PinError(f"{pin.label}: cannot fetch {pin.source!r}; sources must be https:// or file:// URLs")
     dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".part")
+    if dest.is_dir():
+        raise PinError(f"{pin.label}: destination {dest} is a directory; name the file to write")
+    tmp = None
     try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=f".{dest.name}.", suffix=".part")
         sha = hashlib.sha256()
-        with os.fdopen(fd, "wb") as out, urllib.request.urlopen(pin.source, timeout=60) as resp:
+        with os.fdopen(fd, "wb") as out, _OPENER.open(pin.source, timeout=60) as resp:
             while chunk := resp.read(CHUNK):
                 sha.update(chunk)
                 out.write(chunk)
@@ -150,12 +185,18 @@ def fetch(pin: Pin, dest: str | Path) -> Path:
         if actual != pin.digest:
             raise PinMismatch(f"{pin.label}: {pin.source} has digest {actual}, but the manifest pins "
                               f"{pin.digest}; refusing to use it")
+        umask = os.umask(0)
+        os.umask(umask)
+        os.chmod(tmp, 0o666 & ~umask)  # mkstemp makes 0600; give the file normal permissions
         os.replace(tmp, dest)
-    except OSError as e:  # URLError is an OSError
-        Path(tmp).unlink(missing_ok=True)
-        raise PinError(f"{pin.label}: fetching {pin.source} failed: {getattr(e, 'reason', e)}") from None
+    except (OSError, ValueError, http.client.HTTPException) as e:  # URLError is an OSError
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
+        reason = getattr(e, "reason", None) or getattr(e, "strerror", None) or e
+        raise PinError(f"{pin.label}: fetching {pin.source} to {dest} failed: {reason}") from None
     except BaseException:
-        Path(tmp).unlink(missing_ok=True)
+        if tmp:
+            Path(tmp).unlink(missing_ok=True)
         raise
     return dest
 
