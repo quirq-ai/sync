@@ -26,7 +26,7 @@ import sys
 
 from qqsync import __version__
 from qqsync.errors import ManifestError
-from qqsync.guard import scan
+from qqsync.guard import GuardError, scan
 from qqsync.manifest import DEFAULT_PATH, PIN_SECTIONS, Manifest
 from qqsync.pins import PinError, fetch, find_pin, iter_pins, placeholders, verify_checkout, verify_file
 
@@ -84,7 +84,14 @@ def _verify(args: argparse.Namespace) -> int:
 
 
 def _guard(args: argparse.Namespace) -> int:
-    findings = scan(args.root, args.allow or [])
+    notes: list[str] = []
+    try:
+        findings = scan(args.root, args.allow or [], notes)
+    except GuardError as e:
+        print(e, file=sys.stderr)
+        return 1
+    for note in notes:
+        print(f"note: {note}", file=sys.stderr)
     for finding in findings:
         print(finding, file=sys.stderr)
     if not findings:

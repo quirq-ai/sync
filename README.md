@@ -107,9 +107,11 @@ pass `--platform` to pick another. Commit pins are checked out by the `qq` CLI a
 
 ## No other parser: `qqsync guard`
 
-Any repo's presubmit can run `qqsync guard`. It fails when a tracked file both names `repo.toml`
-and uses a TOML library (an import, require, crate or module whose name starts with `toml`, or
-`TOML.parse`), in any language. Markdown, plain text and TOML data files are skipped. The fix is
+Any repo's presubmit can run `qqsync guard`. It fails when a tracked file both names the manifest
+(`repo.toml`, or qqsync's `DEFAULT_PATH`) and reads TOML some other way: any identifier containing
+`toml` (tomllib, pytoml, smol-toml, `Toml`, `TOML.parse`), a data tool such as yq on the manifest,
+or importing the manifest directly. Comment lines and `qqsync <command>` lines don't count, nor do
+`.toml` filenames or the word TOML in prose. Markdown, plain text and TOML data files are skipped. The fix is
 always the same: read the manifest with `qqsync show` (JSON) or the qqsync library.
 
 ```sh

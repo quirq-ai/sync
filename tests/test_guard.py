@@ -15,6 +15,12 @@ PLANTED = {
     "lib/manifest.js": 'const TOML = require("@iarna/toml");\nconst m = TOML.parse(read("infra/repo.toml"));\n',
     "src/main.rs": 'let m: Manifest = toml::from_str(&fs::read_to_string("infra/repo.toml")?)?;\n',
     "ci/check.sh": 'python -c "import tomli; print(tomli.load(open(\'infra/repo.toml\', \'rb\')))"\n',
+    "tools/vendored.py": 'import pytoml\nm = pytoml.load(open("infra/repo.toml"))\n',
+    "tools/via_constant.py": ('from qqsync.manifest import DEFAULT_PATH\nimport tomllib\n'
+                              'm = tomllib.load(open(DEFAULT_PATH, "rb"))\n'),
+    "src/Read.java": 'Toml m = new Toml().read(new File("infra/repo.toml"));\n',
+    "ci/pins.sh": "yq -oy infra/repo.toml\n",
+    "web/manifest.ts": 'import manifest from "../infra/repo.toml";\n',
 }
 
 CLEAN = {
@@ -23,6 +29,9 @@ CLEAN = {
     "ci/build.sh": "qqsync show infra/repo.toml | jq .targets\n", # reading through qqsync is the rule
     "config/load.py": 'import tomllib\nkinds = tomllib.load(open("config/kinds.toml", "rb"))\n',  # another file
     "docs/notes.py": "# The manifest repo.toml is TOML, parsed only by qqsync.\n",
+    ".github/workflows/ci.yml": "      - run: pip install tomli qqsync\n      - run: qqsync validate infra/repo.toml\n",
+    "package.json": '{"scripts": {"pins": "qqsync show infra/repo.toml"}, "dependencies": {"smol-toml": "1"}}\n',
+    "tools/note.py": "# don't parse repo.toml yourself; toml readers drift\nURL = 'https://toml.io'\n",
 }
 
 
@@ -55,6 +64,18 @@ def test_untracked_files_are_ignored_in_a_checkout(tmp_path):
 def test_works_without_git(tmp_path):
     root = make_repo(tmp_path, {**CLEAN, "scripts/pins.py": PLANTED["scripts/pins.py"]}, git=False)
     assert [f.path for f in scan(root)] == ["scripts/pins.py"]
+
+
+def test_root_must_be_a_directory(tmp_path, capsys):
+    assert main(["guard", str(tmp_path / "nope")]) == 1
+    assert "not a directory" in capsys.readouterr().err
+
+
+def test_non_utf8_filename(tmp_path):
+    root = make_repo(tmp_path, CLEAN)
+    (root / "caf\udce9.py".encode("utf-8", "surrogateescape").decode("utf-8", "surrogateescape")).write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+    assert scan(root) == []
 
 
 def test_allow(tmp_path):

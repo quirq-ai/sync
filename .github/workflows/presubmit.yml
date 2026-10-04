@@ -54,6 +54,11 @@ jobs:
           # The planted parser is one of the samples in tests/test_guard.py, so this file stays clean.
           python -c "import sys; sys.path.insert(0, 'tests'); from test_guard import PLANTED; sys.stdout.write(PLANTED['scripts/pins.py'])" > "$d/repo/planted.py"
           git -C "$d/repo" add planted.py
-          if qqsync guard "$d/repo" --allow 'src/qqsync/*' --allow tests/test_guard.py; then
-            echo "::error::a planted second parser passed the guard"; exit 1
+          set +e
+          qqsync guard "$d/repo" --allow 'src/qqsync/*' --allow tests/test_guard.py 2> "$d/err"
+          code=$?
+          set -e
+          cat "$d/err"
+          if [ "$code" -ne 1 ] || ! grep -q '^planted.py:1: parses repo.toml outside qqsync' "$d/err"; then
+            echo "::error::the guard did not reject the planted parser (exit $code)"; exit 1
           fi
