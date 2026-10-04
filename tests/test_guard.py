@@ -31,6 +31,12 @@ PLANTED = {
                       'm = [tomllib.load(open(p, "rb")) for p in glob.glob("infra/repo.t*")]\n'),
     "tools/dynamic.py": ('import importlib\nlib = importlib.import_module("tom" + "llib")\n'
                          'm = lib.load(open("infra/repo.toml", "rb"))\n'),
+    # Review of the second version: names bound by a plain import still read.
+    "tools/from_import.py": 'from tomllib import load\nm = load(open("infra/repo.toml", "rb"))\n',
+    "tools/alias.py": 'import tomli as T\nm = T.load(open("infra/repo.toml", "rb"))\n',
+    "src/lib.rs": 'use toml::from_str;\nlet m: M = from_str(&fs::read_to_string("infra/repo.toml")?)?;\n',
+    "tools/far.py": ('import tomllib\nfrom pathlib import Path\np = Path("infra") / "repo.toml"\n'
+                     + "x = 1\n" * 6 + "m = tomllib.loads(p.read_text())\n"),
 }
 
 # A path constant in one module, read with a TOML library in another (also an audit bypass).
@@ -54,6 +60,17 @@ CLEAN = {
                          'import tomllib\n\n\ndef version():\n'
                          '    with open("pyproject.toml", "rb") as f:\n'
                          '        return tomllib.load(f)["project"]["version"]\n'),
+    # Lines that name the manifest without assigning it a path name nothing else.
+    "tests/test_cli.py": ('import subprocess\nresult = subprocess.run(["qqsync", "show", "infra/repo.toml"])\n'
+                          'cmd = ["qqsync", "show", "infra/repo.toml"]\n'
+                          'print(manifest.load(path="infra/repo.toml"))\n'),
+    "tools/fmt.py": ('import tomllib\n\n\ndef read(path):\n    with open(path, "rb") as f:\n'
+                     '        result = tomllib.load(f)\n    cmd = result\n    return cmd\n'),
+    "build.rs": ('fn main() {\n    println!("cargo:rerun-if-changed=../infra/repo.toml");\n}\n'),
+    "src/cargo.rs": 'let cargo: toml::Value = toml::from_str(&read("Cargo.toml"))?;\n',
+    "web/doc.js": ('/**\n * Do not read infra/repo.toml with smol-toml; call qqsync show.\n */\n'
+                   'export const x = 1;\n'),
+    ".vscode/settings.json": '{"evenBetterToml.schema.associations": {"infra/repo.toml": "x"}}\n',
     "tools/marked.py": ('import tomllib\n'
                         'm = tomllib.load(open("infra/repo.toml", "rb"))  # qqsync-guard: allow (reviewed)\n'),
 }
@@ -82,6 +99,24 @@ def test_planted_parser_is_found(tmp_path, rel):
 def test_path_constant_in_another_module(tmp_path):
     root = make_repo(tmp_path, {**CLEAN, **CROSS_MODULE})
     assert [(f.path, f.line) for f in scan(root)] == [("tools/read.py", 6)]
+
+
+def test_marker_needs_a_reason(tmp_path):
+    root = make_repo(tmp_path, {**CLEAN, "tools/m.py": 'import tomllib\n'
+                                'm = tomllib.load(open("infra/repo.toml", "rb"))  # qqsync-guard: allow\n'})
+    notes = []
+    assert [f.path for f in scan(root, notes=notes)] == ["tools/m.py"]
+    assert any("needs a reason" in n for n in notes)
+    assert any("exempted by qqsync-guard: reviewed" in n for n in notes)
+
+
+def test_long_lines_stay_fast(tmp_path):
+    import time
+    blob = "a" * 200_000 + ":a" * 50_000 + ' "infra/repo.toml"\n'
+    root = make_repo(tmp_path, {**CLEAN, "web/bundle.js": "x = " + blob + "toml" * 50_000 + "\n"})
+    start = time.monotonic()
+    scan(root)
+    assert time.monotonic() - start < 5
 
 
 def test_untracked_files_are_ignored_in_a_checkout(tmp_path):

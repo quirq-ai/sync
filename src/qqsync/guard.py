@@ -6,21 +6,24 @@ manifest with anything but qqsync. Tools read it with `qqsync show` (JSON) or th
 
 The rule is a language-blind heuristic over each tracked file's lines:
   - A line *names the manifest* when it has `repo.toml` (also split as "repo" ".toml" or globbed as
-    repo.t*), qqsync's `DEFAULT_PATH`, or a constant that some file in the repo assigns from one of
-    those (so a path kept in another module still counts).
+    repo.t*), qqsync's `DEFAULT_PATH`, or a name assigned one of those at the start of a line:
+    UPPER_CASE constants count in every file (a path kept in another module), other names only in
+    their own file. Argument lists and qqsync calls do not assign a path.
   - A line *reads TOML* when it has an identifier containing "toml" (tomllib, pytoml, smol-toml,
-    BurntSushi/toml, Toml.ToModel, TOML.parse), a generic data tool (yq, dasel, taplo) or a dynamic
-    import, or imports the manifest file itself. A plain `import tomllib` line, a `.toml` filename and the bare word TOML in prose are
-    not readers.
+    BurntSushi/toml, Toml.ToModel, TOML.parse), a generic data tool (yq, dasel, taplo), a dynamic
+    import, a name a plain import of a TOML library binds, or imports the manifest file itself. The
+    plain import line, a `.toml` filename and the bare word TOML in prose are not readers.
   - A read belongs to the nearest .toml path. A finding is a TOML-reading line that names the
     manifest, or has a line naming it within WINDOW lines and nearer than any line naming another
     .toml file (so reading your own pyproject.toml next to a docstring that mentions the manifest
     is fine).
-Whole-line comments (#, //, /*, <!--), the `qqsync <command> ...` span of a line, and lines marked
-`qqsync-guard: allow` are skipped. Markdown, plain text and TOML data files are skipped. A repo
-exempts a reviewed path with --allow in its presubmit, or a reviewed line with the marker.
-TODO(expert): reading the file as plain text (sed, grep, regexes, a hand-written parser) and
-building the path or the library name at run time beyond the forms above are not caught.
+Whole-line comments, the `qqsync <command> ...` span of a line, and lines marked
+`qqsync-guard: allow <reason>` are skipped (each exemption is reported as a note). Markdown, plain
+text, TOML and JSON data files are skipped. A repo exempts a reviewed path with --allow in its
+presubmit, or a reviewed line with the marker. Matching is linear in line length.
+TODO(expert): not caught are plain-text parsers (sed, grep, regexes, a hand-written parser), paths
+or library names built at run time, paths under dict/config keys or argparse defaults, and reads
+farther than WINDOW lines from the path or in another file through a lower-case name.
 """
 from __future__ import annotations
 
@@ -33,22 +36,29 @@ from pathlib import Path
 
 MANIFEST_NAME = "repo.toml"
 MANIFEST_PATH = re.compile(r"""repo(\.toml\b|["'`]\s*\+?\s*["'`]\.toml\b|\.t[*?\[])|\bDEFAULT_PATH\b""")
-ASSIGNED = re.compile(r"""\b([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=]*)?:?=(?!=)""")
-TOML_WORD = re.compile(r"[A-Za-z0-9_]*toml[A-Za-z0-9_]*", re.IGNORECASE)
+# An assignment at the start of a line (`MANIFEST = ...`, `const m: string = ...`, `pub const P: &str
+# = ...`). Anchored, with a bounded type, so long lines cost linear time.
+ASSIGNED = re.compile(r"""^\s*(?:(?:export|pub|const|let|var|static|final|readonly)\s+)*"""
+                      r"""([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n]{0,80})?:?=(?!=)\s*(.*)$""")
+TOML = "toml"
 GENERIC_READER = re.compile(r"\b(yq|dasel|taplo|import_module|__import__)\b")
 OTHER_TOML_FILE = re.compile(r"""(?<![\w.-])(?!repo\.toml)[\w.-]+\.toml\b""")
-COMMENT = re.compile(r"^\s*(#|//|/\*|<!--)")
-# A plain import names a library; it reads nothing by itself (the call that uses it does).
-PLAIN_IMPORT = re.compile(r"^\s*(import\s+[\w., ]+|from\s+[\w.]+\s+import\s+[\w., ()*]+|use\s+[\w:{}, ]+;)\s*$")
-MARKER = "qqsync-guard: allow"
+# Whole-line comments: #, //, /*, a block comment's " * " continuation, <!--, and "-- ".
+# (`*rest = ...` and `;stmt` are code, not comments.)
+COMMENT = re.compile(r"^\s*(#|//|/\*|\*(\s|/|$)|<!--|--\s)")
+# A plain import of a TOML library reads nothing by itself; the names it binds are readers.
+PLAIN_IMPORT = re.compile(r"^\s*(import|from|use)\s[\w.,:{}()* ]{0,300};?\s*$")
+BOUND = re.compile(r"""(?:\bimport\s+|\bas\s+|,\s*|\{\s*|::)(\w+)""")
+MARKER = re.compile(r"qqsync-guard:\s*allow\b\W*(\w.*)?")
 # A bundler or loader importing the manifest file itself (import m from "../infra/repo.toml").
 IMPORTS_MANIFEST = re.compile(r"""\b(import|require)\b.*repo\.toml\b""")
 # `qqsync show infra/repo.toml` and friends read the manifest the sanctioned way: that span of a
 # line does not count as naming the manifest (the rest of the line still does).
 QQSYNC_INVOCATION = re.compile(r"""\bqqsync\s+(validate|show|pin|pins|fetch|verify|guard)\b[^"'`;&|)\n]*""")
-MIN_CONSTANT = 3  # shorter assigned names (p, m) are too common to follow across files
+CONSTANT = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")  # followed across files: MANIFEST, REPO_TOML
 WINDOW = 5
-SKIP_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst", ".toml"})
+# Prose, TOML data, and JSON (package.json, editor settings: data, which cannot parse anything).
+SKIP_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst", ".toml", ".json", ".lock"})
 MAX_BYTES = 4 << 20
 
 
@@ -86,18 +96,37 @@ def tracked_files(root: Path, notes: list[str]) -> list[str]:
     return sorted(os.fsdecode(p) for p in out.stdout.split(b"\0") if p)
 
 
+def _toml_words(line: str):
+    """Identifiers that contain "toml", found without backtracking (lines can be megabytes long)."""
+    lower, start = line.lower(), 0
+    while (i := lower.find(TOML, start)) >= 0:
+        a, b = i, i + len(TOML)
+        while a and (line[a - 1].isalnum() or line[a - 1] == "_"):
+            a -= 1
+        while b < len(line) and (line[b].isalnum() or line[b] == "_"):
+            b += 1
+        yield a, b, line[a:b]
+        start = b
+
+
 def _reads_toml(line: str) -> bool:
-    if PLAIN_IMPORT.match(line):
-        return False
     if GENERIC_READER.search(line):
         return True
-    for m in TOML_WORD.finditer(line):
-        if m.group().lower() == "toml" and line[m.start() - 1:m.start()] == ".":
+    for a, b, word in _toml_words(line):
+        if word.lower() == TOML and line[a - 1:a] == ".":
             continue  # a filename such as kinds.toml, not a library
-        if m.group() == "TOML" and line[m.end():m.end() + 1] not in (".", ":"):
+        if word == "TOML" and line[b:b + 1] not in (".", ":"):
             continue  # the format's name in prose ("not valid TOML"), not TOML.parse or TOML::
         return True
     return False
+
+
+def _imported_readers(line: str) -> set[str]:
+    """Names a plain import of a TOML library binds (`from tomllib import load`, `import tomli as T`,
+    `use toml::from_str;`); empty when the line is not such an import."""
+    if len(line) > 400 or not PLAIN_IMPORT.match(line) or not _reads_toml(line):
+        return set()
+    return {m.group(1) for m in BOUND.finditer(line)} - {"import", "as", "self", "super", "crate"}
 
 
 def _read_text(root: Path, rel: str, notes: list[str]) -> str | None:
@@ -131,28 +160,52 @@ def scan(root: str | Path, allow: list[str] = (), notes: list[str] | None = None
         if Path(rel).suffix.lower() in SKIP_SUFFIXES or any(fnmatch.fnmatch(rel, g) for g in allow):
             continue
         text = _read_text(root, rel, notes)
-        if text is not None:
-            files[rel] = [(n, QQSYNC_INVOCATION.sub(" ", line)) for n, line in enumerate(text.splitlines(), 1)
-                          if not COMMENT.match(line) and MARKER not in line]
+        if text is None:
+            continue
+        kept = []
+        for n, line in enumerate(text.splitlines(), 1):
+            if COMMENT.match(line):
+                continue
+            if marker := MARKER.search(line):
+                if marker.group(1):
+                    notes.append(f"{rel}:{n}: exempted by qqsync-guard: {marker.group(1).strip()[:80]}")
+                    continue
+                notes.append(f"{rel}:{n}: qqsync-guard: allow needs a reason after it; not exempted")
+            kept.append((n, QQSYNC_INVOCATION.sub(" ", line)))
+        files[rel] = kept
 
-    # Constants holding the manifest's path, wherever they are defined, name the manifest too.
-    names = {m.group(1) for lines in files.values() for _, line in lines if MANIFEST_PATH.search(line)
-             for m in [ASSIGNED.search(line[:MANIFEST_PATH.search(line).start()])] if m}
-    names = {n for n in names if len(n) >= MIN_CONSTANT and n != "DEFAULT_PATH"}
-    names_manifest = MANIFEST_PATH if not names else re.compile(
-        MANIFEST_PATH.pattern + "|" + r"\b(" + "|".join(sorted(map(re.escape, names))) + r")\b")
+    # Names assigned the manifest's path name it too: UPPER_CASE constants anywhere in the repo,
+    # other names only in the file that assigns them. An argument list or a qqsync call is not a path.
+    local: dict[str, set[str]] = {}
+    shared: set[str] = set()
+    for rel, lines in files.items():
+        for _, line in lines:
+            if len(line) > 2000 or not MANIFEST_PATH.search(line):
+                continue
+            m = ASSIGNED.match(line)
+            if not m or m.group(1) == "DEFAULT_PATH" or "qqsync" in m.group(2) or m.group(2)[:1] in "[{":
+                continue
+            (shared if CONSTANT.match(m.group(1)) else local.setdefault(rel, set())).add(m.group(1))
+
+    def names_pattern(names: set[str]) -> re.Pattern:
+        if not names:
+            return MANIFEST_PATH
+        return re.compile(MANIFEST_PATH.pattern + r"|\b(" + "|".join(sorted(map(re.escape, names))) + r")\b")
 
     findings = []
     for rel, lines in files.items():
+        names_manifest = names_pattern(shared | local.get(rel, set()))
         manifest = [n for n, line in lines if names_manifest.search(line)]
         if not manifest:
             continue
         others = [n for n, line in lines if OTHER_TOML_FILE.search(line)]
+        readers = set().union(*(_imported_readers(line) for _, line in lines))
+        bound = re.compile(r"\b(" + "|".join(sorted(map(re.escape, readers))) + r")\b") if readers else None
         for n, line in lines:
             if IMPORTS_MANIFEST.search(line):
                 findings.append(Finding(rel, n, line))
                 break
-            if not _reads_toml(line):
+            if _imported_readers(line) or not (_reads_toml(line) or (bound and bound.search(line))):
                 continue
             to_manifest = min(abs(n - m) for m in manifest)
             to_other = min((abs(n - o) for o in others), default=WINDOW + 1)
