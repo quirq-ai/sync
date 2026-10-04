@@ -8,6 +8,7 @@ Kinds are opaque strings; pass `known_kinds` to also require each kind to be one
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from functools import cache
 from importlib import resources
@@ -25,6 +26,14 @@ def schema_for(version: str) -> dict:
         known = ", ".join(sorted(SCHEMA_FILES))
         raise ValueError(f"unknown manifest schema {version!r}; this qqsync knows {known}") from None
     return json.loads(resources.files("qqsync").joinpath("schema", name).read_text())
+
+
+_OCI_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"  # the OCI distribution spec's name grammar
+OCI_SOURCE = re.compile(r"^oci://(?P<registry>[A-Za-z0-9.-]+(?::[0-9]+)?|\[::1\](?::[0-9]+)?)"
+                        rf"/(?P<repository>{_OCI_COMPONENT}(?:/{_OCI_COMPONENT})*)"
+                        r"(?:@(?P<manifest>sha256:[0-9a-f]{64}))?$")
+OCI_PIN_RULE = ("an oci:// pin names the image manifest in its source (oci://REGISTRY/REPO@sha256:<manifest>) "
+                "and pins the layer's bytes in digest (sha256:<layer>, a different value)")
 
 
 def validate(data: dict, known_kinds: Iterable[str] | None = None) -> list[str]:
@@ -49,7 +58,30 @@ def validate(data: dict, known_kinds: Iterable[str] | None = None) -> list[str]:
                 if not (e.validator == "oneOf" and tuple(e.absolute_path) in wrong_type)]
     if problems:
         return problems  # the graph checks below assume the shape is right
-    return _check_targets(data["targets"], None if known_kinds is None else set(known_kinds))
+    return _check_oci_pins(data) + _check_targets(data["targets"], None if known_kinds is None else set(known_kinds))
+
+
+def _check_oci_pins(data: dict) -> list[str]:
+    """oci:// pins must name the manifest and pin a layer, or the bytes fetched are never pinned."""
+    problems = []
+    for section in ("toolchains", "deps"):
+        for name, pin in data.get(section, {}).items():
+            arts = ([(f"{section}.{name}.platforms.{plat}", art) for plat, art in pin["platforms"].items()]
+                    if "platforms" in pin else [(f"{section}.{name}", pin)])
+            for where, art in arts:
+                if not art["source"].startswith("oci://"):
+                    continue
+                m = OCI_SOURCE.match(art["source"])
+                if not m:
+                    problems.append(f"{where}.source: {art['source']!r} is not "
+                                    "oci://REGISTRY/REPO@sha256:<manifest> (lower-case OCI repository names)")
+                elif not m["manifest"]:
+                    problems.append(f"{where}.source: {art['source']!r} has no @sha256:<manifest>; {OCI_PIN_RULE}")
+                elif not art["digest"].startswith("sha256:") or art["digest"] == m["manifest"]:
+                    problems.append(f"{where}.digest: {art['digest']} must be the layer's sha256, not "
+                                    f"{'the manifest digest' if art['digest'] == m['manifest'] else 'a commit'}; "
+                                    f"{OCI_PIN_RULE}")
+    return problems
 
 
 def _message(error) -> str:

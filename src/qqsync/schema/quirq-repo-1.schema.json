@@ -89,7 +89,7 @@
       }
     },
     "source": {
-      "description": "Where the pinned bytes come from: https://, oci://REGISTRY/REPOSITORY[@sha256:<manifest>], file://, or a git URL for a git: pin. qqsync.pins fetches the first three.",
+      "description": "Where the pinned bytes come from: https://, oci://REGISTRY/REPOSITORY@sha256:<manifest>, file://, or a git URL for a git: pin. qqsync.pins fetches the first three.",
       "type": "string",
       "minLength": 1,
       "pattern": "^\\S+$",

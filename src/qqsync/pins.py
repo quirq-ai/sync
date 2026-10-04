@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from qqsync.manifest import PIN_SECTIONS
+from qqsync.schema import OCI_PIN_RULE, OCI_SOURCE
 
 PLACEHOLDER_HEX = frozenset({"0" * 40, "0" * 64})
 CHUNK = 1 << 20
@@ -163,10 +164,6 @@ _OPENER = urllib.request.build_opener(_HttpsOnlyRedirects)
 
 OCI_ACCEPT = ", ".join(["application/vnd.oci.image.manifest.v1+json",
                         "application/vnd.docker.distribution.manifest.v2+json"])
-_OCI_COMPONENT = r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*"  # the OCI distribution spec's name grammar
-OCI_SOURCE = re.compile(r"^oci://(?P<registry>[A-Za-z0-9.-]+(?::[0-9]+)?|\[::1\](?::[0-9]+)?)"
-                        rf"/(?P<repository>{_OCI_COMPONENT}(?:/{_OCI_COMPONENT})*)"
-                        r"(?:@(?P<manifest>sha256:[0-9a-f]{64}))?$")
 _LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
@@ -247,6 +244,8 @@ def _open_oci_layer(pin: Pin):
     another's bytes. The layer's bytes are then checked against the pin like any download.
     """
     registry, repository, manifest_digest = oci_parts(pin.source)
+    if not manifest_digest or manifest_digest == pin.digest:
+        raise PinError(f"{pin.label}: {OCI_PIN_RULE}")
     scheme = "http" if _local_http_allowed(urllib.parse.urlsplit(f"//{registry}").hostname) else "https"
     base = f"{scheme}://{registry}/v2/{repository}"
     token: list[str] = []
