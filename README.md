@@ -117,21 +117,52 @@ pass `--platform` to pick another. Commit pins are checked out by the `qq` CLI a
 
 ## No other parser: `qqsync guard`
 
-Any repo's presubmit can run `qqsync guard`. It fails when a tracked file both names the manifest
-(`repo.toml`, or qqsync's `DEFAULT_PATH`) and reads TOML some other way: any identifier containing
-`toml` (tomllib, pytoml, smol-toml, `Toml`, `TOML.parse`), a data tool such as yq on the manifest,
-or importing the manifest directly. Comment lines and `qqsync <command>` lines don't count, nor do
-`.toml` filenames or the word TOML in prose. Markdown, plain text and TOML data files are skipped. The fix is
-always the same: read the manifest with `qqsync show` (JSON) or the qqsync library.
+Any repo's presubmit can run `qqsync guard`. It fails when a tracked file reads TOML near a place
+that names the manifest:
+
+- **Names the manifest:** `repo.toml` (also split as `"infra/repo" ".toml"` or globbed as
+  `repo.t*`), qqsync's `DEFAULT_PATH`, or a name assigned one of those: an UPPER_CASE constant
+  (`MANIFEST`, `_MANIFEST`) anywhere in the repo, so a path kept in another module still counts,
+  unless some file assigns the same name something else; any name assigned at the left margin, in
+  its whole file; an indented name from its assignment until it is reassigned or a function starts
+  at its indent, and as `self.x`/`this.x`/`cls.x` in its file. A function whose signature names the
+  manifest (a default argument) names it throughout its body.
+- **Reads TOML:** an identifier containing `toml` (tomllib, pytoml, smol-toml, `Toml`,
+  `TOML.parse`), a data tool (yq, dasel, taplo) or a dynamic import on the line that names the
+  manifest, or importing the manifest file directly. An import of a TOML library is not a read by itself, but
+  the names it binds are: Python `from tomllib import load` (also across lines in parentheses) and
+  `import tomli as T`, Rust `use toml::from_str;`, JS `import { parse } from "smol-toml"` and
+  `const { parse } = require("@iarna/toml")`, Go `t "github.com/pelletier/go-toml/v2"` (in a
+  `.go` import), and
+  `lib = importlib.import_module(...)`.
+- **Finding:** a reading line that names the manifest, or that has a line naming it within 5 lines
+  and nearer than any line naming another `.toml` file. So a module that mentions the manifest in a
+  docstring and reads its own `pyproject.toml` passes.
+
+Whole-line comments (`#`, `//`, `/*`, ` * `, `<!--`, `-- `), the `qqsync <command> ...` part of a
+line (or a `["qqsync", "show", ...]` argument list), `.toml` filenames and the word TOML in prose
+don't count. Markdown, plain text, TOML and JSON data files are skipped. Matching is linear in the
+size of each file. The fix is always the
+same: read the manifest with `qqsync show` (JSON) or the qqsync library.
 
 ```sh
 python -m pip install "qqsync @ git+https://github.com/quirq-ai/sync@<commit>"
-qqsync guard .        # exit 1 with file:line for each second parser, or PASS
+qqsync guard .                          # exit 1 with file:line for each second parser, or PASS
+qqsync guard . --allow 'vendor/*'       # skip reviewed paths (keep the list in your presubmit)
 ```
 
-`--allow GLOB` exists only for this repo's own library and test samples. The check is a heuristic;
-a parser that reads the file with plain text tools is not caught yet (`TODO(expert)` in
-`src/qqsync/guard.py`).
+A reviewed line can be exempted with a `qqsync-guard: allow <reason>` comment on it; the guard
+prints every exempted line with its reason, and ignores a marker with no reason. Both escapes
+belong in code review, like any other presubmit exemption.
+
+What it does not catch (`TODO(expert)` in `src/qqsync/guard.py`): a parser that reads the file as
+plain text (sed, grep, regexes, a hand-written parser); a path or library name built at run time
+(`f"infra/{name}.toml"`, `glob("infra/*.toml")`); a path kept under a dict or config key or as an
+argparse default (`args.manifest`); a path passed to another function and read there; a read more
+than 5 lines from the path that does not use a name assigned it; and import forms beyond those
+listed. A pre-commit `check-toml` hook within 5 lines of the manifest's name is flagged and needs
+the marker. It is a heuristic that keeps honest code honest; a determined bypass needs
+review to catch.
 
 ## Use it
 
