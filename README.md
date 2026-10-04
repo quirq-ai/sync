@@ -82,9 +82,9 @@ qqsync pin toolchains python --digest sha256:<64 hex> --version 3.15.0
 ```
 
 Reading a manifest and writing it back unchanged gives the same bytes, CRLF and comments included.
-An edit changes only the lines it must. Every manifest is read by both the standard TOML parser and
-the editor; if they disagree, or the editor cannot reproduce the file exactly, the manifest is
-refused rather than edited. Every edit is validated, and an edit that would make the manifest
+An edit changes only the lines it must, and `write` follows symlinks and keeps the file mode. Before
+editing, the file is read by both the standard TOML parser and the editor; if they disagree, or the
+editor cannot reproduce the file exactly, the edit is refused (reading still works). Every edit is validated, and an edit that would make the manifest
 invalid is undone and raises `ManifestError`.
 
 ## Use it

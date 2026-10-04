@@ -34,7 +34,8 @@ def _validate(args: argparse.Namespace) -> int:
 
 
 def _show(args: argparse.Namespace) -> int:
-    print(json.dumps(Manifest.read(args.path).data, indent=2, sort_keys=True))
+    # TOML dates and times have no JSON type; they come out as ISO 8601 strings.
+    print(json.dumps(Manifest.read(args.path).data, indent=2, sort_keys=True, default=lambda o: o.isoformat()))
     return 0
 
 

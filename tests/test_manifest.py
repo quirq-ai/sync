@@ -155,3 +155,60 @@ def test_cli_show_and_pin(tmp_path, capsys):
     assert main(["pin", "toolchains", "python", "--digest", "bad", "--manifest", str(path)]) == 1
     assert "digest" in capsys.readouterr().err
     assert Manifest.read(path).data["toolchains"]["python"]["digest"] == B
+
+
+def test_write_follows_symlink_and_keeps_mode(tmp_path):
+    real = tmp_path / "real.toml"
+    real.write_bytes(AWKWARD.encode())
+    real.chmod(0o644)
+    (tmp_path / "infra").mkdir()
+    link = tmp_path / "infra" / "repo.toml"
+    link.symlink_to(real)
+    m = Manifest.read(link)
+    m.set_pin("toolchains", "python", digest=B)
+    m.write()
+    assert link.is_symlink()
+    assert Manifest.read(real).data["toolchains"]["python"]["digest"] == B
+    assert real.stat().st_mode & 0o777 == 0o644
+
+
+def test_write_error_is_a_manifest_error(tmp_path):
+    with pytest.raises(ManifestError, match="cannot write"):
+        Manifest(AWKWARD).write(tmp_path / "missing-dir" / "repo.toml")
+
+
+def test_inline_toolchains_table():
+    text = ('schema = "quirq-repo/1"\n'
+            f'toolchains = {{ py = {{ source = "s", digest = "{A}" }} }}\n'
+            'targets = [{ name = "a", kind = "k" }]\n')
+    m = Manifest(text)
+    m.set_pin("toolchains", "rb", digest=B, source="x")
+    m.set_pin("toolchains", "py", digest=B)
+    assert m.data["toolchains"] == {"py": {"source": "s", "digest": B}, "rb": {"source": "x", "digest": B}}
+
+
+def test_unsupported_value_is_a_manifest_error():
+    with pytest.raises(ManifestError, match="cannot make this edit"):
+        Manifest(AWKWARD).set_target("server", "params", {"x": object()})
+
+
+def test_reading_does_not_need_the_editor():
+    # Valid, but tomlkit cannot write this table order back byte for byte: readable, not editable.
+    text = (f'schema = "quirq-repo/1"\n[toolchains.a]\nsource = "s"\ndigest = "{A}"\n'
+            '[[targets]]\nname = "t"\nkind = "k"\n'
+            f'[toolchains.b]\nsource = "s"\ndigest = "{A}"\n')
+    m = Manifest(text)
+    assert set(m.data["toolchains"]) == {"a", "b"}
+    try:
+        m.set_pin("toolchains", "a", digest=B)
+    except ManifestError as e:
+        assert "cannot be edited safely" in str(e)
+    else:
+        assert m.data["toolchains"]["a"]["digest"] == B
+
+
+def test_cli_show_dates(tmp_path, capsys):
+    path = tmp_path / "repo.toml"
+    path.write_text('schema = "quirq-repo/1"\ntargets = [{ name = "a", kind = "k", params = { d = 2020-01-01 } }]\n')
+    assert main(["show", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["targets"][0]["params"]["d"] == "2020-01-01"

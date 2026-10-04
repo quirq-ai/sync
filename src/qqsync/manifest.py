@@ -1,9 +1,12 @@
 """Reading and editing manifests. The one place a manifest's text becomes data.
 
-Every manifest is read twice: by `tomllib` (the standard library's TOML parser, which defines what
-the data is) and by `tomlkit` (which keeps comments, order and formatting so edits can be written
-back). If the two disagree, or `tomlkit` cannot reproduce the file byte for byte, the manifest is
-refused rather than risk an edit that changes more than it says.
+Reading uses `tomllib`, the standard library's TOML parser, which defines what the data is. Editing
+also uses `tomlkit`, which keeps comments, order and formatting. Before the first edit the file is
+read by both; if they disagree, or `tomlkit` cannot reproduce the file byte for byte, the edit is
+refused rather than risk one that changes more than it says. Reading alone never needs this.
+
+Limits of the editor: removing a target can take the comment lines just above the next
+`[[targets]]` header with it, and adding a pin next to pins written as dotted keys is refused.
 
 Edits are transactional: each one is applied, the whole result is validated, and on any problem the
 edit is undone and ManifestError is raised. A Manifest is therefore always valid.
@@ -11,6 +14,7 @@ edit is undone and ManifestError is raised. A Manifest is therefore always valid
 from __future__ import annotations
 
 import os
+import stat
 import tempfile
 import tomllib
 from collections.abc import Iterable
@@ -33,7 +37,7 @@ class Manifest:
     def __init__(self, text: str, source: str = "<string>", known_kinds: Iterable[str] | None = None):
         self.source = source
         self.known_kinds = None if known_kinds is None else frozenset(known_kinds)
-        self._check(_parse(text, source))
+        self._check(_read(text, source))
         self._text = text
 
     @classmethod
@@ -60,14 +64,27 @@ class Manifest:
 
     def write(self, path: str | Path | None = None) -> None:
         """Write the manifest atomically, to `path` or back where it was read from."""
-        path = Path(path if path is not None else self.source)
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        path = Path(os.path.realpath(path if path is not None else self.source))  # write through symlinks
         try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except FileNotFoundError:
+            mode = 0o644
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 f.write(self._text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, mode)
             os.replace(tmp, path)
+        except OSError as e:
+            if tmp:
+                Path(tmp).unlink(missing_ok=True)
+            raise ManifestError(str(path), [f"cannot write: {e.strerror or e}"]) from None
         except BaseException:
-            Path(tmp).unlink(missing_ok=True)
+            if tmp:
+                Path(tmp).unlink(missing_ok=True)
             raise
 
     # --- editing ---------------------------------------------------------------------------------
@@ -90,7 +107,7 @@ class Manifest:
             if pin is None:
                 if source is None:
                     raise ManifestError(self.source, [f"{section}.{name}: new pin needs a source"])
-                pin = pins[name] = tomlkit.table()
+                pin = pins[name] = tomlkit.inline_table() if isinstance(pins, InlineTable) else tomlkit.table()
             if version is not None:
                 pin["version"] = version
             if platform is None:
@@ -103,7 +120,8 @@ class Manifest:
                                                       "drop the platform"])
                 platforms = pin.get("platforms")
                 if platforms is None:
-                    platforms = pin["platforms"] = tomlkit.table()
+                    platforms = pin["platforms"] = (tomlkit.inline_table() if isinstance(pin, InlineTable)
+                                                    else tomlkit.table())
                 target = platforms.get(platform)
                 if target is None:
                     if source is None:
@@ -163,12 +181,17 @@ class Manifest:
     # --- internals -------------------------------------------------------------------------------
 
     def _edit(self, change) -> None:
-        doc = tomlkit.parse(self._text)  # edit a copy; self stays untouched until the result checks out
-        change(doc)
-        text = tomlkit.dumps(doc)
+        doc = _editable(self._text, self.source)  # a fresh copy; self is untouched until the result checks out
+        try:
+            change(doc)
+            text = tomlkit.dumps(doc)
+        except ManifestError:
+            raise
+        except Exception as e:  # tomlkit raises ValueError, ConvertError and others for edits it cannot make
+            raise ManifestError(self.source, [f"cannot make this edit: {e}"]) from None
         if "\r\n" in self._text and "\n" not in self._text.replace("\r\n", ""):  # the editor writes new lines with \n; keep the file's own endings
             text = text.replace("\r\n", "\n").replace("\n", "\r\n")
-        self._check(_parse(text, self.source))
+        self._check(_read(text, self.source))
         self._text = text
 
     def _check(self, data: dict) -> None:
@@ -177,11 +200,16 @@ class Manifest:
             raise ManifestError(self.source, problems)
 
 
-def _parse(text: str, source: str) -> dict:
+def _read(text: str, source: str) -> dict:
     try:
-        data = tomllib.loads(text)
+        return tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise ManifestError(source, [f"not valid TOML: {e}"]) from None
+
+
+def _editable(text: str, source: str):
+    """The tomlkit document for `text`, if editing it is safe."""
+    data = _read(text, source)
     try:
         doc = tomlkit.parse(text)
     except Exception as e:  # tomlkit raises several types; any of them means we cannot edit safely
@@ -192,7 +220,7 @@ def _parse(text: str, source: str) -> dict:
     if tomlkit.dumps(doc) != text:
         raise ManifestError(source, ["cannot be edited safely: the editor would not write it back byte "
                                      "for byte; simplify the formatting"])
-    return data
+    return doc
 
 
 def _find_target(doc, name: str, source: str) -> Table | InlineTable:
