@@ -193,7 +193,7 @@ def test_unsupported_value_is_a_manifest_error():
 
 
 def test_reading_does_not_need_the_editor():
-    # Valid, but tomlkit cannot write this table order back byte for byte: readable, not editable.
+    # Valid, but the editor cannot write this table order back byte for byte: readable, not editable.
     text = (f'schema = "quirq-repo/1"\n[toolchains.a]\nsource = "s"\ndigest = "{A}"\n'
             '[[targets]]\nname = "t"\nkind = "k"\n'
             f'[toolchains.b]\nsource = "s"\ndigest = "{A}"\n')

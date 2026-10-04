@@ -45,3 +45,15 @@ jobs:
           test ! -e "$d/out/tc.tar"
           printf 'pinned toolchain' > "$d/tc.tar"
           qqsync fetch toolchains tc --dest "$d/out/tc.tar" --manifest "$d/repo.toml"
+      - name: no parser of repo.toml outside qqsync (this repo)
+        run: qqsync guard . --allow 'src/qqsync/*' --allow tests/test_guard.py
+      - name: "V0-SYN-04 done-when: a planted second parser fails presubmit"
+        run: |
+          d=$(mktemp -d)
+          git clone -q . "$d/repo"
+          # The planted parser is one of the samples in tests/test_guard.py, so this file stays clean.
+          python -c "import sys; sys.path.insert(0, 'tests'); from test_guard import PLANTED; sys.stdout.write(PLANTED['scripts/pins.py'])" > "$d/repo/planted.py"
+          git -C "$d/repo" add planted.py
+          if qqsync guard "$d/repo" --allow 'src/qqsync/*' --allow tests/test_guard.py; then
+            echo "::error::a planted second parser passed the guard"; exit 1
+          fi

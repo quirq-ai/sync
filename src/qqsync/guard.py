@@ -5,10 +5,11 @@ format in place, so any repo's presubmit runs `qqsync guard`, which fails when a
 manifest and uses a TOML parser. Tools read the manifest with `qqsync show` (JSON) or the qqsync
 library instead.
 
-The rule is deliberately simple and language-blind: a file that mentions `repo.toml` and also uses
-any identifier starting with "toml" (a TOML library: an import, a require, a crate, a module) is a
-second parser. Filenames like `kinds.toml` don't count. Prose (Markdown, plain text) and TOML data
-files are skipped.
+The rule is deliberately simple and language-blind: a file that mentions `repo.toml` and also names
+a TOML library (any lowercase identifier starting with "toml", such as an import, a require, a
+crate or a module, or `TOML.parse`) is a second parser. Filenames like `kinds.toml` and the word
+"TOML" in prose don't count. Markdown, plain text and TOML data files are skipped.
+TODO(expert): this misses parsers that read the file without a TOML library (sed, grep, regexes).
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MANIFEST_NAME = "repo.toml"
-TOML_PARSER = re.compile(r"(?<![.\w])toml", re.IGNORECASE)  # tomllib, tomlkit, @iarna/toml, TOML.parse
+TOML_PARSER = re.compile(r"(?<![.\w])toml|\bTOML\s*\.\s*\w")  # tomllib, tomlkit, @iarna/toml, TOML.parse
 SKIP_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst", ".toml"})
 MAX_BYTES = 1 << 20
 
