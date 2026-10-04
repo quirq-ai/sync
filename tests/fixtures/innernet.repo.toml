@@ -1,14 +1,14 @@
 # Fixture: the manifest innernet gets at onboarding (V0-ONB-02 lands the real one in innernet).
-# Digests are placeholders until quirq-ai/toolchains publishes the Node toolchain (V0-TCH-02).
+# The toolchain pin is the one quirq-ai/toolchains promoted (promoted.toml at d020ec6): an OCI
+# image manifest digest. Only linux-x86_64 is built so far.
 schema = "quirq-repo/1"
 
 [qq]
 version = "0.1.0"
 
 [toolchains.node]
-version = "24"       # Node LTS for Next.js 16; the toolchain bundles pnpm
-platforms."linux-x86_64" = { source = "https://github.com/quirq-ai/toolchains/releases/download/node-24/node-24-linux-x86_64.tar.zst", digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
-platforms."macos-arm64" = { source = "https://github.com/quirq-ai/toolchains/releases/download/node-24/node-24-macos-arm64.tar.zst", digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+version = "24.21.0"  # Node LTS for Next.js 16; the toolchain bundles pnpm 11.28.2
+platforms."linux-x86_64" = { source = "oci://ghcr.io/quirq-ai/toolchains/node", digest = "sha256:a84e067c794c73ba5ecf72064bcb6940e67f51f3fce7803edc54040e8c69a173" }
 
 [[targets]]
 name = "app"

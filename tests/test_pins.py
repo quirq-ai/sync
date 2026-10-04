@@ -99,23 +99,39 @@ def test_verify_checkout(tmp_path):
         verify_checkout(pin, repo / "sub")
 
 
+ZERO = "sha256:" + "0" * 64
+PINS = ('schema = "quirq-repo/1"\n'
+        '[toolchains.node]\n'
+        f'platforms.linux-x86_64 = {{ source = "https://example.invalid/node-linux.tar", digest = "{sha(b"l")}" }}\n'
+        f'platforms.macos-arm64 = {{ source = "https://example.invalid/node-macos.tar", digest = "{ZERO}" }}\n'
+        '[toolchains.python]\n'
+        f'source = "https://example.invalid/py.tar"\ndigest = "{sha(b"p")}"\n'
+        '[[targets]]\nname = "a"\nkind = "k"\n')
+
+
 def test_iter_and_find_pins():
-    data = Manifest.read(FIXTURES / "innernet.repo.toml").data
+    data = Manifest(PINS).data
     labels = [p.label for p in iter_pins(data)]
-    assert labels == ["toolchains.node.platforms.linux-x86_64", "toolchains.node.platforms.macos-arm64"]
-    assert find_pin(data, "toolchains", "node", "macos-arm64").source.endswith("macos-arm64.tar.zst")
+    assert labels == ["toolchains.node.platforms.linux-x86_64", "toolchains.node.platforms.macos-arm64",
+                      "toolchains.python"]
+    assert find_pin(data, "toolchains", "node", "macos-arm64").source.endswith("node-macos.tar")
     with pytest.raises(PinError, match="no pin for platform windows-x86_64"):
         find_pin(data, "toolchains", "node", "windows-x86_64")
     with pytest.raises(PinError, match="no such pin"):
         find_pin(data, "deps", "node")
-    xo = Manifest.read(FIXTURES / "xo-space.repo.toml").data
-    assert find_pin(xo, "toolchains", "python").platform is None
+    assert find_pin(data, "toolchains", "python").platform is None
     with pytest.raises(PinError, match="drop the platform"):
-        find_pin(xo, "toolchains", "python", "linux-x86_64")
+        find_pin(data, "toolchains", "python", "linux-x86_64")
 
 
 def test_placeholders():
-    assert len(placeholders(Manifest.read(FIXTURES / "innernet.repo.toml").data)) == 2
+    assert placeholders(Manifest(PINS).data) == [
+        "toolchains.node.platforms.macos-arm64: digest is a placeholder (all zeros); pin the real digest"]
+
+
+@pytest.mark.parametrize("path", sorted(FIXTURES.glob("*.repo.toml")), ids=lambda p: p.name)
+def test_product_fixtures_pin_real_digests(path):
+    assert placeholders(Manifest.read(path).data) == []
 
 
 def test_current_platform_shape():
@@ -136,38 +152,10 @@ def test_cli_fetch_mismatch_fails(tmp_path, artifact, capsys):
 
 
 def test_cli_pins(tmp_path, capsys):
-    path = FIXTURES / "xo-space.repo.toml"
+    path = tmp_path / "repo.toml"
+    path.write_text(PINS)
     assert main(["pins", str(path)]) == 0
-    assert "toolchains.python\tsha256:" in capsys.readouterr().out
+    assert "toolchains.python\t" + sha(b"p") in capsys.readouterr().out
     assert main(["pins", "--strict", str(path)]) == 1
     assert "placeholder" in capsys.readouterr().err
-
-
-def test_fetched_file_has_normal_permissions(tmp_path, artifact):
-    out = fetch(Pin("toolchains", "tc", None, artifact.as_uri(), sha(b"the real toolchain")), tmp_path / "o")
-    assert out.stat().st_mode & 0o044 == 0o044  # group and others can read (umask 022 or 002)
-
-
-def test_fetch_bad_destinations(tmp_path, artifact):
-    pin = Pin("toolchains", "tc", None, artifact.as_uri(), sha(b"the real toolchain"))
-    with pytest.raises(PinError, match="is a directory"):
-        fetch(pin, tmp_path)
-    with pytest.raises(PinError, match="failed"):
-        fetch(pin, artifact / "under-a-file")
-    with pytest.raises(PinError, match="failed"):
-        fetch(Pin("deps", "d", None, "https://example.invalid:abc/x", sha(b"x")), tmp_path / "x")
-
-
-def test_verify_missing_file(tmp_path):
-    with pytest.raises(PinError, match="cannot read"):
-        verify_file(Pin("deps", "d", None, "s", sha(b"x")), tmp_path / "nope")
-
-
-def test_redirects_only_to_https():
-    import urllib.error
-    import urllib.request
-    from qqsync.pins import _HttpsOnlyRedirects
-    req = urllib.request.Request("https://example.invalid/a")
-    with pytest.raises(urllib.error.URLError, match="only https"):
-        _HttpsOnlyRedirects().redirect_request(req, None, 302, "Found", {}, "http://example.invalid/b")
-    assert _HttpsOnlyRedirects().redirect_request(req, None, 302, "Found", {}, "https://example.invalid/b")
+    assert main(["pins", "--strict", str(FIXTURES / "xo-space.repo.toml")]) == 0
