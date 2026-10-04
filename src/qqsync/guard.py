@@ -62,9 +62,9 @@ OPEN_PAREN_IMPORT = re.compile(r"^\s*from\s+[\w.]+\s+import\s*\(\s*$")
 PY_IMPORT = re.compile(r"^\s*import\s+([\w.]+(?:\s+as\s+\w+)?(?:\s*,\s*[\w.]+(?:\s+as\s+\w+)?)*)\s*;?\s*$")
 RUST_USE = re.compile(r"^\s*(?:pub\s+)?use\s+([\w:]+?)(?:::\{([\w\s,:]*)\})?(?:\s+as\s+(\w+))?\s*;\s*$")
 JS_IMPORT = re.compile(r"""^\s*import\s+([\w\s,{}*$]+?)\s+from\s+["']([^"']+)["']\s*;?\s*$""")
-JS_REQUIRE = re.compile(r"""^\s*(?:const|let|var)\s+(\{[\w\s,:$]*\}|[\w$]+)\s*=\s*require\(\s*["']([^"']+)["']\s*\)""")
+JS_REQUIRE = re.compile(r"""^\s*(?:const|let|var)\s+(\{[\w\s,:$]*\}|[\w$]+)\s*=\s*require\(\s*["']([^"']+)["']\s*\)\s*;?\s*$""")
 GO_IMPORT = re.compile(r"""^\s*(?:import\s+)?(\w+\s+)?"([^"\s]+)"\s*\)?\s*$""")
-DYNAMIC_BIND = re.compile(r"^\s*(?:(?:const|let|var)\s+)?(\w+)\s*=.*\b(?:import_module|__import__)\s*\(")
+DYNAMIC_BIND = re.compile(r"^\s*(?:(?:const|let|var)\s+)?(\w+)\s*=[\w\s.]*\b(?:import_module|__import__)\s*\([^()]*\)\s*;?\s*$")
 MARKER = re.compile(r"qqsync-guard:\s*allow\b\W*(\w.*)?")
 IMPORT_WORD = re.compile(r"\b(import|require)\b")
 # `qqsync show infra/repo.toml` and ["qqsync", "show", ...] read the manifest the sanctioned way:
@@ -73,7 +73,7 @@ QQSYNC_INVOCATION = re.compile(r"""\bqqsync\s+(validate|show|pin|pins|fetch|veri
                                r"""|\[\s*["']qqsync["']\s*,\s*["'](validate|show|pin|pins|fetch|verify|guard)["']"""
                                r"""[^\]\n]{0,500}\]""")
 CONSTANT = re.compile(r"^_*[A-Z][A-Z0-9_]{2,}$")  # followed across files: MANIFEST, _REPO_TOML
-IDENT = re.compile(r"(?<![\w$.])(?:(self|this|cls)\.)?([A-Za-z_][A-Za-z0-9_]*)")
+IDENT = re.compile(r"(?<![\w.])(?:(self|this|cls)\.)?([A-Za-z_][A-Za-z0-9_]*)")
 GO_IMPORT_BLOCK = re.compile(r"^\s*import\s*\(\s*$")
 WINDOW = 5
 MAX_LINE = 2000
@@ -277,6 +277,7 @@ def scan(root: str | Path, allow: list[str] = (), notes: list[str] | None = None
             if not attr:
                 rebinds.setdefault(n, set()).add(name)
         manifest_lines: set[int] = set()
+        stack: list[tuple[int, set[str]]] = []  # (indent, names), indents increasing
         live: dict[str, int] = {}  # indented name -> its assignment's indent
         body_of: int | None = None  # indent of a function whose signature names the manifest
         for n, line in lines:
@@ -284,11 +285,19 @@ def scan(root: str | Path, allow: list[str] = (), notes: list[str] | None = None
             if line.strip() and body_of is not None and indent <= body_of:
                 body_of = None
             if FUNCTION.match(line):
-                live = {k: v for k, v in live.items() if v < indent}
+                while stack and stack[-1][0] >= indent:
+                    for name in stack.pop()[1]:
+                        if live.get(name) is not None and live[name] >= indent:
+                            del live[name]
             for name in rebinds.get(n, ()):
                 live.pop(name, None)
             if n in starts:
                 live[starts[n][1]] = starts[n][0]
+                i = bisect.bisect_left(stack, (starts[n][0],))
+                if i < len(stack) and stack[i][0] == starts[n][0]:
+                    stack[i][1].add(starts[n][1])
+                else:
+                    stack.insert(i, (starts[n][0], {starts[n][1]}))
             names_it = body_of is not None or MANIFEST_PATH.search(line) is not None
             if not names_it:
                 for m in IDENT.finditer(line):
@@ -323,7 +332,7 @@ def scan(root: str | Path, allow: list[str] = (), notes: list[str] | None = None
             if n in bindings:
                 continue
             same_line_only = n in manifest_lines and (GENERIC_READER.search(line) or DYNAMIC_IMPORT.search(line))
-            reads = _reads_toml(line) or any(not m.group(1) and m.group(2) in readers
+            reads = _reads_toml(line) or any(not m.group(1) and m.group(2) in readers and line[m.start() - 1:m.start()] != "$"
                                              for m in IDENT.finditer(line)) if readers else _reads_toml(line)
             if same_line_only:
                 findings.append(Finding(rel, n, line))

@@ -60,6 +60,11 @@ PLANTED = {
                        '    def load(self):\n        return tomllib.load(open(self.manifest, "rb"))\n'),
     "tools/default.py": ('import tomllib\n\n\ndef load(path="infra/repo.toml"):\n    """Load.\n\n'
                          '    More.\n\n    Even more.\n    """\n    return tomllib.load(open(path, "rb"))\n'),
+    # Fourth review: $NAME uses, and a binding chained into a read.
+    "ci/dollar.sh": 'MANIFEST=infra/repo.toml\n' + "echo x\n" * 6 + 'yq -p toml -oy ".deps" "$MANIFEST"\n',
+    "tools/chained.py": 'cfg = __import__("tomllib").load(open("infra/repo.toml", "rb"))\n',
+    "web/chained.js": ('const cfg = require("@iarna/toml").parse(\n'
+                       '  fs.readFileSync("infra/repo.toml", "utf8"));\n'),
 }
 
 # A path constant in one module, read with a TOML library in another (also an audit bypass).
@@ -183,6 +188,16 @@ def test_many_names_and_files_stay_fast(tmp_path):
     local = "def f():\n" + "".join(f"    v{i} = 'repo.toml'\n" for i in range(8000)) + "    x = 1\n" * 8000
     files = {f"m{i}.py": f"C{i} = 'repo.toml'\n" + "x = 1\n" * 20 for i in range(2000)}
     root = make_repo(tmp_path, {**CLEAN, "local.py": local, **files})
+    start = time.monotonic()
+    scan(root)
+    assert time.monotonic() - start < 5
+
+
+def test_many_scoped_names_and_functions_stay_fast(tmp_path):
+    import time
+    n = 20_000
+    text = "class C:\n" + "".join(f'    a{i} = "repo.toml"\n' for i in range(n)) + "        def f():\n" * n
+    root = make_repo(tmp_path, {**CLEAN, "c.py": text})
     start = time.monotonic()
     scan(root)
     assert time.monotonic() - start < 5
