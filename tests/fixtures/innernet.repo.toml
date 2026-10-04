@@ -1,0 +1,17 @@
+# Fixture: the manifest innernet gets at onboarding (V0-ONB-02 lands the real one in innernet).
+# Digests are placeholders until quirq-ai/toolchains publishes the Node toolchain (V0-TCH-02).
+schema = "quirq-repo/1"
+
+[qq]
+version = "0.1.0"
+
+[toolchains.node]
+version = "24"       # Node LTS for Next.js 16; the toolchain bundles pnpm
+platforms."linux-x86_64" = { source = "https://github.com/quirq-ai/toolchains/releases/download/node-24/node-24-linux-x86_64.tar.zst", digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+platforms."macos-arm64" = { source = "https://github.com/quirq-ai/toolchains/releases/download/node-24/node-24-macos-arm64.tar.zst", digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000" }
+
+[[targets]]
+name = "app"
+kind = "node-app"
+srcs = ["app/**", "components/**", "lib/**", "public/**", "package.json", "pnpm-lock.yaml", "*.ts", "*.mjs", "tsconfig.json"]
+outs = [".next/"]
