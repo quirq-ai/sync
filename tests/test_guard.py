@@ -37,6 +37,18 @@ PLANTED = {
     "src/lib.rs": 'use toml::from_str;\nlet m: M = from_str(&fs::read_to_string("infra/repo.toml")?)?;\n',
     "tools/far.py": ('import tomllib\nfrom pathlib import Path\np = Path("infra") / "repo.toml"\n'
                      + "x = 1\n" * 6 + "m = tomllib.loads(p.read_text())\n"),
+    # Second review: imports in other forms, far from the read.
+    "tools/paren.py": ('from tomllib import (\n    load,\n)\nM = "infra/repo.toml"\n' + "x = 1\n" * 6 +
+                       'm = load(open(M, "rb"))\n'),
+    "web/esm.js": ('import { parse } from "smol-toml";\nconst P = "infra/repo.toml";\n' + "x = 1\n" * 6 +
+                   'const m = parse(read(P));\n'),
+    "web/cjs.js": ('const { parse } = require("@iarna/toml");\nconst P = "infra/repo.toml";\n' + "x = 1\n" * 6 +
+                   'const m = parse(read(P));\n'),
+    "go/read.go": ('import (\n\tt "github.com/pelletier/go-toml/v2"\n)\nconst P = "infra/repo.toml"\n'
+                   + "// x\nvar x = 1\n" * 4 + 'err := t.Unmarshal(read(P), &m)\n'),
+    "tools/attr.py": ('import tomllib\n\n\nclass R:\n    def __init__(self, root):\n'
+                      '        self.path = root / "infra" / "repo.toml"\n' + "    x = 1\n" * 6 +
+                      '    def read(self):\n        return tomllib.loads(self.path.read_text())\n'),
 }
 
 # A path constant in one module, read with a TOML library in another (also an audit bypass).
@@ -71,6 +83,18 @@ CLEAN = {
     "web/doc.js": ('/**\n * Do not read infra/repo.toml with smol-toml; call qqsync show.\n */\n'
                    'export const x = 1;\n'),
     ".vscode/settings.json": '{"evenBetterToml.schema.associations": {"infra/repo.toml": "x"}}\n',
+    # Second review: comma imports bind only the TOML module; local names end at a new function.
+    "tools/comma.py": ('"""Mentions infra/repo.toml."""\nimport os, tomllib\nROOT = os.getcwd()\n' + "x = 1\n" * 6
+                       + 'with open("pyproject.toml", "rb") as f:\n    v = tomllib.load(f)\n'),
+    "tools/scoped.py": ('import tomllib\n\n\ndef show():\n    path = ROOT / "infra/repo.toml"\n'
+                        '    run(["qqsync", "show", str(path)])\n' + "\n" * 8 +
+                        'def version(path):\n    return tomllib.load(open(path, "rb"))\n'),
+    "tools/dyn_ok.py": ('from qqsync.manifest import DEFAULT_PATH\nimport importlib\n'
+                        'plugin = importlib.import_module("plugins.x")\n'),
+    "ci/env.sh": 'MANIFEST=infra/repo.toml\nqqsync show "$MANIFEST"\n',
+    "build.rs.d/build.rs": ('const MANIFEST: &str = "Cargo.toml";\n'
+                            'let v: toml::Value = toml::from_str(&read(MANIFEST))?;\n'),
+    "tests/test_list.py": 'run(["qqsync", "show", "infra/repo.toml"])\nimport tomllib\nv = tomllib.loads(x)\n',
     "tools/marked.py": ('import tomllib\n'
                         'm = tomllib.load(open("infra/repo.toml", "rb"))  # qqsync-guard: allow (reviewed)\n'),
 }
@@ -114,6 +138,22 @@ def test_long_lines_stay_fast(tmp_path):
     import time
     blob = "a" * 200_000 + ":a" * 50_000 + ' "infra/repo.toml"\n'
     root = make_repo(tmp_path, {**CLEAN, "web/bundle.js": "x = " + blob + "toml" * 50_000 + "\n"})
+    start = time.monotonic()
+    scan(root)
+    assert time.monotonic() - start < 5
+
+
+def test_case_folding_that_changes_length(tmp_path):
+    # "İ".lower() is two characters; positions must come from the line itself.
+    root = make_repo(tmp_path, {"t.py": 'P = "infra/repo.toml"\nx = "İİİİİİİİİİ toml"\n'})
+    assert [(f.path, f.line) for f in scan(root)] == [("t.py", 2)]
+
+
+def test_many_lines_stay_fast(tmp_path):
+    import time
+    body = 'P = "infra/repo.toml"\n' * 20_000 + "\n" * 10 + "v = tomllib.loads(x)\n" * 20_000
+    spaces = 'x = "repo"' + " " * 200_000 + "\n"
+    root = make_repo(tmp_path, {**CLEAN, "big.py": body, "spaces.py": spaces})
     start = time.monotonic()
     scan(root)
     assert time.monotonic() - start < 5

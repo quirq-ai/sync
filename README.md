@@ -122,19 +122,24 @@ that names the manifest:
 
 - **Names the manifest:** `repo.toml` (also split as `"infra/repo" ".toml"` or globbed as
   `repo.t*`), qqsync's `DEFAULT_PATH`, or a name assigned one of those: an UPPER_CASE constant
-  anywhere in the repo (so a path kept in another module still counts), any other name in its own
-  file.
+  anywhere in the repo (so a path kept in another module still counts, unless that file assigns
+  the name something else), a `self.x`/`this.x` attribute in its own file, and any other name from
+  its assignment until it is reassigned or a new function starts.
 - **Reads TOML:** an identifier containing `toml` (tomllib, pytoml, smol-toml, `Toml`,
-  `TOML.parse`), a data tool such as yq, a dynamic import (`import_module`), or importing the
-  manifest file directly. A plain `import tomllib` line is not a read by itself, but the names
-  it binds are (`from tomllib import load`, `import tomli as T`, `use toml::from_str;`).
+  `TOML.parse`), a data tool such as yq, a dynamic import on a line naming the manifest, or
+  importing the manifest file directly. An import of a TOML library is not a read by itself, but
+  the names it binds are: Python `from tomllib import load` (also across lines in parentheses) and
+  `import tomli as T`, Rust `use toml::from_str;`, JS `import { parse } from "smol-toml"` and
+  `const { parse } = require("@iarna/toml")`, Go `t "github.com/pelletier/go-toml/v2"`, and
+  `lib = importlib.import_module(...)`.
 - **Finding:** a reading line that names the manifest, or that has a line naming it within 5 lines
   and nearer than any line naming another `.toml` file. So a module that mentions the manifest in a
   docstring and reads its own `pyproject.toml` passes.
 
 Whole-line comments (`#`, `//`, `/*`, ` * `, `<!--`, `-- `), the `qqsync <command> ...` part of a
-line, `.toml` filenames and the word TOML in prose don't count. Markdown, plain text, TOML and JSON
-data files are skipped. The fix is always the
+line (or a `["qqsync", "show", ...]` argument list), `.toml` filenames and the word TOML in prose
+don't count. Markdown, plain text, TOML and JSON data files are skipped. Matching is linear in the
+size of each file. The fix is always the
 same: read the manifest with `qqsync show` (JSON) or the qqsync library.
 
 ```sh
@@ -150,8 +155,10 @@ belong in code review, like any other presubmit exemption.
 What it does not catch (`TODO(expert)` in `src/qqsync/guard.py`): a parser that reads the file as
 plain text (sed, grep, regexes, a hand-written parser); a path or library name built at run time
 (`f"infra/{name}.toml"`, `glob("infra/*.toml")`); a path kept under a dict or config key or as an
-argparse default (`args.manifest`); and a read more than 5 lines from the path, or in another file
-through a lower-case name. It is a heuristic that keeps honest code honest; a determined bypass needs
+argparse default (`args.manifest`); a path passed to another function and read there; a read more
+than 5 lines from the path that does not use a name assigned it; and import forms beyond those
+listed. Some config files flag on main too and need the marker: a pre-commit `check-toml` hook or
+`taplo fmt` next to the manifest's name. It is a heuristic that keeps honest code honest; a determined bypass needs
 review to catch.
 
 ## Use it
