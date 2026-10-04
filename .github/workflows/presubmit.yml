@@ -32,6 +32,8 @@ jobs:
           echo "kinds: $kinds"
           if [ -z "$kinds" ]; then echo "::error::infra-config listed no kinds"; exit 1; fi
           qqsync validate tests/fixtures/xo-space.repo.toml tests/fixtures/innernet.repo.toml $kinds
+          qqsync pins --strict tests/fixtures/xo-space.repo.toml
+          qqsync pins --strict tests/fixtures/innernet.repo.toml
       - name: "V0-SYN-03 done-when: a fetched artifact that does not match its pin fails the build"
         run: |
           d=$(mktemp -d)

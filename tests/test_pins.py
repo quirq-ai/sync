@@ -99,23 +99,39 @@ def test_verify_checkout(tmp_path):
         verify_checkout(pin, repo / "sub")
 
 
+ZERO = "sha256:" + "0" * 64
+PINS = ('schema = "quirq-repo/1"\n'
+        '[toolchains.node]\n'
+        f'platforms.linux-x86_64 = {{ source = "https://example.invalid/node-linux.tar", digest = "{sha(b"l")}" }}\n'
+        f'platforms.macos-arm64 = {{ source = "https://example.invalid/node-macos.tar", digest = "{ZERO}" }}\n'
+        '[toolchains.python]\n'
+        f'source = "https://example.invalid/py.tar"\ndigest = "{sha(b"p")}"\n'
+        '[[targets]]\nname = "a"\nkind = "k"\n')
+
+
 def test_iter_and_find_pins():
-    data = Manifest.read(FIXTURES / "innernet.repo.toml").data
+    data = Manifest(PINS).data
     labels = [p.label for p in iter_pins(data)]
-    assert labels == ["toolchains.node.platforms.linux-x86_64", "toolchains.node.platforms.macos-arm64"]
-    assert find_pin(data, "toolchains", "node", "macos-arm64").source.endswith("macos-arm64.tar.zst")
+    assert labels == ["toolchains.node.platforms.linux-x86_64", "toolchains.node.platforms.macos-arm64",
+                      "toolchains.python"]
+    assert find_pin(data, "toolchains", "node", "macos-arm64").source.endswith("node-macos.tar")
     with pytest.raises(PinError, match="no pin for platform windows-x86_64"):
         find_pin(data, "toolchains", "node", "windows-x86_64")
     with pytest.raises(PinError, match="no such pin"):
         find_pin(data, "deps", "node")
-    xo = Manifest.read(FIXTURES / "xo-space.repo.toml").data
-    assert find_pin(xo, "toolchains", "python").platform is None
+    assert find_pin(data, "toolchains", "python").platform is None
     with pytest.raises(PinError, match="drop the platform"):
-        find_pin(xo, "toolchains", "python", "linux-x86_64")
+        find_pin(data, "toolchains", "python", "linux-x86_64")
 
 
 def test_placeholders():
-    assert len(placeholders(Manifest.read(FIXTURES / "innernet.repo.toml").data)) == 2
+    assert placeholders(Manifest(PINS).data) == [
+        "toolchains.node.platforms.macos-arm64: digest is a placeholder (all zeros); pin the real digest"]
+
+
+@pytest.mark.parametrize("path", sorted(FIXTURES.glob("*.repo.toml")), ids=lambda p: p.name)
+def test_product_fixtures_pin_real_digests(path):
+    assert placeholders(Manifest.read(path).data) == []
 
 
 def test_current_platform_shape():
@@ -136,11 +152,13 @@ def test_cli_fetch_mismatch_fails(tmp_path, artifact, capsys):
 
 
 def test_cli_pins(tmp_path, capsys):
-    path = FIXTURES / "xo-space.repo.toml"
+    path = tmp_path / "repo.toml"
+    path.write_text(PINS)
     assert main(["pins", str(path)]) == 0
-    assert "toolchains.python\tsha256:" in capsys.readouterr().out
+    assert "toolchains.python\t" + sha(b"p") in capsys.readouterr().out
     assert main(["pins", "--strict", str(path)]) == 1
     assert "placeholder" in capsys.readouterr().err
+    assert main(["pins", "--strict", str(FIXTURES / "xo-space.repo.toml")]) == 0
 
 
 def test_fetched_file_has_normal_permissions(tmp_path, artifact):

@@ -98,7 +98,7 @@
       }
     },
     "digest": {
-      "description": "The content pin. sha256:<64 hex> for an artifact's bytes, git:<40 or 64 hex> for a commit.",
+      "description": "The content pin. sha256:<64 hex> for the fetched bytes (a file, or an OCI image manifest), git:<40 or 64 hex> for a commit.",
       "type": "string",
       "pattern": "^(sha256:[0-9a-f]{64}|git:([0-9a-f]{40}|[0-9a-f]{64}))$",
       "not": {

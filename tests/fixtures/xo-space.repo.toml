@@ -1,14 +1,14 @@
 # Fixture: the manifest xo-space gets at onboarding (V0-ONB-01 lands the real one in xo-space).
-# Digests are placeholders until quirq-ai/toolchains publishes the Python toolchain (V0-TCH-01).
+# The toolchain pin is the one quirq-ai/toolchains promoted (promoted.toml at d020ec6): an OCI
+# image manifest digest. Only linux-x86_64 is built so far.
 schema = "quirq-repo/1"
 
 [qq]
 version = "0.1.0"
 
 [toolchains.python]
-version = "3.14.8"   # latest stable CPython on 2026-10-03; rollers keep it current
-source = "https://github.com/quirq-ai/toolchains/releases/download/python-3.14.8/python-3.14.8-linux-x86_64.tar.zst"
-digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+version = "3.14.8"   # latest stable CPython; rollers keep it current
+platforms."linux-x86_64" = { source = "oci://ghcr.io/quirq-ai/toolchains/python", digest = "sha256:32c0b762db5ec5453e63cf057ab4fa072751a19f1af70f08c07ac4f5fb70a716" }
 
 [[targets]]
 name = "server"

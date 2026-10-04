@@ -82,12 +82,15 @@ def test_new_pin_needs_source():
 
 
 def test_platform_pins():
-    path = FIXTURES / "innernet.repo.toml"
-    m = Manifest.read(path)
+    text = ('schema = "quirq-repo/1"\n[toolchains.node]\n'
+            f'platforms."linux-x86_64" = {{ source = "s", digest = "{A}" }}\n'
+            f'platforms."macos-arm64" = {{ source = "s", digest = "{A}" }}\n'
+            '[[targets]]\nname = "a"\nkind = "k"\n')
+    m = Manifest(text)
     m.set_pin("toolchains", "node", platform="linux-x86_64", digest=B)
     assert m.data["toolchains"]["node"]["platforms"]["linux-x86_64"]["digest"] == B
-    assert m.data["toolchains"]["node"]["platforms"]["macos-arm64"]["digest"] != B
-    assert len(changed_lines(path.read_text(), m.dumps())) == 2
+    assert m.data["toolchains"]["node"]["platforms"]["macos-arm64"]["digest"] == A
+    assert len(changed_lines(text, m.dumps())) == 2
     with pytest.raises(ManifestError, match="name the platform"):
         m.set_pin("toolchains", "node", digest=B)
     with pytest.raises(ManifestError, match="drop the platform"):
