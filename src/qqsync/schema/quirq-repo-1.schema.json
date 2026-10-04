@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/quirq-ai/sync/schema/quirq-repo-1.schema.json",
+  "title": "quirq-repo/1",
+  "description": "A quirq infra repo manifest (infra/repo.toml): pinned toolchains, pinned dependencies and typed targets. Parsed, never executed. Unknown keys are rejected so a typo is an error, not a silently ignored setting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "targets"],
+  "properties": {
+    "schema": {
+      "description": "The schema version this manifest follows.",
+      "const": "quirq-repo/1"
+    },
+    "qq": {
+      "description": "The qq CLI version this repo runs. A fresh machine installs exactly this version.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "source": { "$ref": "#/$defs/source" },
+        "digest": { "$ref": "#/$defs/digest" }
+      },
+      "dependentRequired": { "source": ["digest"], "digest": ["source"] }
+    },
+    "toolchains": {
+      "description": "Toolchains the targets build with, by name. Names match the toolchain names in infra-config's kinds.toml.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/pin" }
+    },
+    "deps": {
+      "description": "Other dependencies fetched before a build, by name.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/pin" }
+    },
+    "targets": {
+      "description": "What this repo builds, tests and ships.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/target" }
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "maxLength": 64
+    },
+    "version": {
+      "description": "A human-readable version label. Informational: the digest is what is verified.",
+      "type": "string",
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+_-]*$",
+      "maxLength": 64
+    },
+    "source": {
+      "description": "Where the pinned artifact is fetched from. Opaque to sync: the fetcher interprets the scheme.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S+$"
+    },
+    "digest": {
+      "description": "The content pin. sha256:<64 hex> for an artifact's bytes, git:<40 or 64 hex> for a commit.",
+      "type": "string",
+      "pattern": "^(sha256:[0-9a-f]{64}|git:([0-9a-f]{40}|[0-9a-f]{64}))$"
+    },
+    "platform": {
+      "description": "<os>-<arch>, for example linux-x86_64 or macos-arm64.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+-[a-z0-9_]+$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "digest"],
+      "properties": {
+        "source": { "$ref": "#/$defs/source" },
+        "digest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "pin": {
+      "description": "One pinned thing: either source and digest, or platforms with a source and digest each (not both).",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": { "$ref": "#/$defs/version" },
+        "source": { "$ref": "#/$defs/source" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "platforms": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/platform" },
+          "additionalProperties": { "$ref": "#/$defs/artifact" }
+        }
+      },
+      "oneOf": [
+        { "required": ["source", "digest"], "not": { "required": ["platforms"] } },
+        { "required": ["platforms"], "not": { "anyOf": [{ "required": ["source"] }, { "required": ["digest"] }] } }
+      ]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind"],
+      "properties": {
+        "name": { "$ref": "#/$defs/name" },
+        "kind": {
+          "description": "An opaque kind name from infra-config's kinds.toml; quirq-ai/recipes gives it meaning.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "maxLength": 64
+        },
+        "srcs": {
+          "description": "Input globs, relative to the repo root.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "outs": {
+          "description": "Declared outputs, relative to the target's output root.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "deps": {
+          "description": "Names of other targets in this manifest that this one needs first.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/name" }
+        },
+        "cacheable": {
+          "description": "false for a step that is not hermetic: it still runs but its result is never reused.",
+          "type": "boolean"
+        },
+        "params": {
+          "description": "Kind-specific settings, passed to the kind's adapter as is. sync does not interpret them.",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

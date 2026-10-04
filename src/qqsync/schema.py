@@ -1,0 +1,111 @@
+"""The manifest schemas and validation against them.
+
+Validation has two layers. The JSON Schema (schema/quirq-repo-1.schema.json) fixes the shape: which
+keys exist, their types and the digest format. The checks below cover what a JSON Schema cannot:
+target names are unique, every target dep names a target, and the target graph has no cycle.
+Kinds are opaque strings; pass `known_kinds` to also require each kind to be one infra-config lists.
+"""
+from __future__ import annotations
+
+import json
+from collections.abc import Iterable
+from functools import cache
+from importlib import resources
+
+SCHEMA_FILES = {"quirq-repo/1": "quirq-repo-1.schema.json"}
+CURRENT = "quirq-repo/1"
+
+
+@cache
+def schema_for(version: str) -> dict:
+    """The JSON Schema for one manifest schema version."""
+    try:
+        name = SCHEMA_FILES[version]
+    except KeyError:
+        known = ", ".join(sorted(SCHEMA_FILES))
+        raise ValueError(f"unknown manifest schema {version!r}; this qqsync knows {known}") from None
+    return json.loads(resources.files("qqsync").joinpath("schema", name).read_text())
+
+
+def validate(data: dict, known_kinds: Iterable[str] | None = None) -> list[str]:
+    """Every problem with a parsed manifest, as 'location: message' strings. Empty means valid."""
+    from jsonschema import Draft202012Validator
+
+    version = data.get("schema") if isinstance(data, dict) else None
+    if not isinstance(version, str):
+        return ["schema: missing; the first line of a manifest is schema = \"" + CURRENT + "\""]
+    if version not in SCHEMA_FILES:
+        known = ", ".join(sorted(SCHEMA_FILES))
+        return [f"schema: {version!r} is not a schema this qqsync knows ({known}); "
+                "upgrade the pinned qqsync or fix the version"]
+
+    validator = Draft202012Validator(schema_for(version))
+    problems = [f"{_where(e.absolute_path)}: {_message(e)}"
+                for e in sorted(validator.iter_errors(data), key=lambda e: list(map(str, e.absolute_path)))]
+    if problems:
+        return problems  # the graph checks below assume the shape is right
+    return _check_targets(data["targets"], None if known_kinds is None else set(known_kinds))
+
+
+def _message(error) -> str:
+    # "is not valid under any of the given schemas" names no fix; the schema's description does.
+    if error.validator == "oneOf" and "description" in error.schema:
+        return "expected " + error.schema["description"][0].lower() + error.schema["description"][1:]
+    return error.message
+
+
+def _where(path: Iterable) -> str:
+    out = ""
+    for part in path:
+        out += f"[{part}]" if isinstance(part, int) else (f".{part}" if out else str(part))
+    return out or "(root)"
+
+
+def _check_targets(targets: list[dict], known_kinds: set[str] | None) -> list[str]:
+    problems = []
+    index: dict[str, int] = {}
+    for i, t in enumerate(targets):
+        if t["name"] in index:
+            problems.append(f"targets[{i}].name: {t['name']!r} is already used by targets[{index[t['name']]}]")
+        else:
+            index[t["name"]] = i
+        if known_kinds is not None and t["kind"] not in known_kinds:
+            problems.append(f"targets[{i}].kind: {t['kind']!r} is not a kind infra-config lists")
+    for i, t in enumerate(targets):
+        for dep in t.get("deps", []):
+            if dep == t["name"]:
+                problems.append(f"targets[{i}].deps: {dep!r} depends on itself")
+            elif dep not in index:
+                problems.append(f"targets[{i}].deps: {dep!r} is not a target in this manifest")
+    if not problems:
+        cycle = _find_cycle({t["name"]: t.get("deps", []) for t in targets})
+        if cycle:
+            problems.append("targets: dependency cycle " + " -> ".join(cycle))
+    return problems
+
+
+def _find_cycle(graph: dict[str, list[str]]) -> list[str] | None:
+    done: set[str] = set()
+    for root in graph:
+        if root in done:
+            continue
+        path: list[str] = []
+        on_path: set[str] = set()
+        stack = [(root, iter(graph[root]))]
+        path.append(root)
+        on_path.add(root)
+        while stack:
+            node, children = stack[-1]
+            child = next(children, None)
+            if child is None:
+                stack.pop()
+                path.pop()
+                on_path.discard(node)
+                done.add(node)
+            elif child in on_path:
+                return path[path.index(child):] + [child]
+            elif child not in done:
+                stack.append((child, iter(graph[child])))
+                path.append(child)
+                on_path.add(child)
+    return None
