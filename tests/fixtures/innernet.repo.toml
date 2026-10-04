@@ -1,6 +1,6 @@
 # Fixture: the manifest innernet gets at onboarding (V0-ONB-02 lands the real one in innernet).
-# The toolchain pin is the one quirq-ai/toolchains promoted (promoted.toml at d020ec6): an OCI
-# image manifest digest. Only linux-x86_64 is built so far.
+# The toolchain pin is the one quirq-ai/toolchains promoted (promoted.toml at d020ec6): the OCI
+# image manifest in the source, and the digest of its one layer. Only linux-x86_64 is built so far.
 schema = "quirq-repo/1"
 
 [qq]
@@ -8,7 +8,7 @@ version = "0.1.0"
 
 [toolchains.node]
 version = "24.21.0"  # Node LTS for Next.js 16; the toolchain bundles pnpm 11.28.2
-platforms."linux-x86_64" = { source = "oci://ghcr.io/quirq-ai/toolchains/node", digest = "sha256:a84e067c794c73ba5ecf72064bcb6940e67f51f3fce7803edc54040e8c69a173" }
+platforms."linux-x86_64" = { source = "oci://ghcr.io/quirq-ai/toolchains/node@sha256:a84e067c794c73ba5ecf72064bcb6940e67f51f3fce7803edc54040e8c69a173", digest = "sha256:8c0ab89a2bc9a397f443ae9196ec95535e60e5ead1378a920cf44b2b2b392d01" }
 
 [[targets]]
 name = "app"
