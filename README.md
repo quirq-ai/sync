@@ -176,6 +176,9 @@ python -m pip install "qqsync @ git+https://github.com/quirq-ai/sync@<commit>"
 qqsync --version
 ```
 
+To install `qqsync` next to `qq` on your own machine, follow the qq guide:
+https://docs.quirq.dev/docs/qq.
+
 ## Develop
 
 ```sh
@@ -189,8 +192,8 @@ Python 3.14 in CI (the org pin in infra-config); the library itself needs 3.11 o
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-SYN-01 | Manifest schema `quirq-repo/1` | #2 | merged; xo-space and innernet fixtures validate in presubmit (onboarding lands the real manifests) |
-| V0-SYN-02 | Parser and editor library | #3 | merged; done-when waits on V0-DEP-02 and V0-ROL-01 adopting it |
+| V0-SYN-01 | Manifest schema `quirq-repo/1` | #2 | merged; xo-space and innernet fixtures validate in presubmit. Both repos now carry their own `infra/repo.toml`, which presubmit does not read |
+| V0-SYN-02 | Parser and editor library | #3 | merged; depot (`qq sync`, version pins) and rollers (`qqroll`) read and edit manifests through it, and `tests/test_manifest.py` checks the byte-identical round trip |
 | V0-SYN-03 | Pin check | #4 | merged; done-when shown by a presubmit step |
 | V0-SYN-04 | "No other parser" check | #5 | merged; done-when shown by a presubmit step |
 
