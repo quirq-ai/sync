@@ -1,3 +1,6 @@
+import errno
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -144,3 +147,117 @@ def test_refuses_unreadable_inputs(tmp_path):
     broken.write_text("[[kind]\n")
     with pytest.raises(InitError, match="not valid TOML"):
         _init(tmp_path, ["node-app"], kinds_file=broken)
+
+
+def _promoted_with(tmp_path, old, new):
+    p = tmp_path / "promoted-edited.toml"
+    text = PROMOTED.read_text()
+    assert old in text
+    p.write_text(text.replace(old, new, 1))
+    return p
+
+
+def _kinds_with(tmp_path, extra):
+    p = tmp_path / "kinds-edited.toml"
+    p.write_text(KINDS.read_text() + extra)
+    return p
+
+
+def test_refuses_input_not_utf8(tmp_path):
+    bad = tmp_path / "bad.toml"
+    bad.write_bytes(b"\xff\xfe")
+    with pytest.raises(InitError, match="not UTF-8"):
+        _init(tmp_path, ["node-app"], kinds_file=bad)
+    with pytest.raises(InitError, match="not UTF-8"):
+        _init(tmp_path, ["node-app"], promoted=bad)
+
+
+def test_refuses_kind_listed_twice(tmp_path):
+    kinds = _kinds_with(tmp_path, '\n[[kind]]\nname = "node-app"\n')
+    with pytest.raises(InitError, match="'node-app' is listed twice"):
+        _init(tmp_path, ["node-app"], kinds_file=kinds)
+
+
+@pytest.mark.parametrize("toolchain", ['""', '["node"]', "1"])
+def test_refuses_toolchain_that_is_not_a_name(tmp_path, toolchain):
+    kinds = tmp_path / "kinds.toml"
+    kinds.write_text(f'[[kind]]\nname = "app"\ntoolchain = {toolchain}\n')
+    with pytest.raises(InitError, match="not a name"):
+        _init(tmp_path, ["app"], kinds_file=kinds)
+
+
+def test_refuses_promoted_field_of_wrong_type(tmp_path):
+    promoted = _promoted_with(tmp_path, 'version = "24.21.0"', "version = 24")
+    with pytest.raises(InitError, match="version must be a non-empty string"):
+        _init(tmp_path, ["node-app"], promoted=promoted)
+
+
+def test_refuses_layer_that_is_not_a_hash(tmp_path):
+    promoted = _promoted_with(tmp_path, 'layer_sha256 = "', 'layer_sha256 = "sha256:')
+    with pytest.raises(InitError, match="layer_sha256 must be 64 lowercase hex"):
+        _init(tmp_path, ["node-app"], promoted=promoted)
+
+
+def test_writes_any_unicode_source(tmp_path):
+    promoted = _promoted_with(tmp_path, 'ref = "oci://ghcr.io/quirq-ai/toolchains/node@sha256:a84e067c',
+                              'ref = "https://example.test/\U0001F600\\"/node@sha256:a84e067c')
+    made = Manifest.read(_init(tmp_path, ["node-app"], promoted=promoted)).data
+    assert made["toolchains"]["node"]["platforms"]["linux-x86_64"]["source"].startswith(
+        'https://example.test/\U0001F600"/node')
+
+
+def test_more_platforms_in_order(tmp_path):
+    text = PROMOTED.read_text()
+    start = text.index("[[toolchain]]", text.index('name = "node"') - 40)
+    end = text.find("[[toolchain]]", start + 1)
+    node = text[start:end if end != -1 else len(text)]
+    promoted = tmp_path / "promoted.toml"
+    promoted.write_text(text + "\n" + node.replace('"linux-x86_64"', '"darwin-arm64"'))
+    made = _init(tmp_path, ["node-app"], promoted=promoted).read_text()
+    assert made.index("platforms.darwin-arm64") < made.index("platforms.linux-x86_64")
+
+
+def test_refuses_directory_at_manifest_path(tmp_path):
+    (tmp_path / "infra" / "repo.toml").mkdir(parents=True)
+    with pytest.raises(InitError, match="a directory, not a manifest"):
+        _init(tmp_path, ["node-app"])
+
+
+def test_write_failure_is_an_error_and_leaves_nothing(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr("qqsync.init.tempfile.mkstemp", fail)
+    with pytest.raises(InitError, match="cannot write: Permission denied"):
+        _init(tmp_path, ["node-app"])
+    assert not (tmp_path / "infra").exists()
+
+
+def test_manifest_appearing_before_the_link_is_kept(tmp_path, monkeypatch):
+    real_link = os.link
+
+    def racing_link(src, dst):
+        Path(dst).write_text("theirs\n")
+        return real_link(src, dst)
+    monkeypatch.setattr("qqsync.init.os.link", racing_link)
+    with pytest.raises(InitError, match="already exists"):
+        _init(tmp_path, ["node-app"])
+    assert (tmp_path / "infra" / "repo.toml").read_text() == "theirs\n"
+    assert _leftovers(tmp_path) == []
+
+
+def test_no_hard_links_falls_back_to_exclusive_create(tmp_path, monkeypatch):
+    def no_link(src, dst):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+    monkeypatch.setattr("qqsync.init.os.link", no_link)
+    dest = _init(tmp_path, ["node-app"])
+    assert dest.read_text() == render(["node-app"], KINDS, PROMOTED, "0.1.0")
+    assert _leftovers(tmp_path) == []
+
+
+def test_mode_follows_umask(tmp_path):
+    old = os.umask(0o027)
+    try:
+        dest = _init(tmp_path, ["node-app"])
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(dest.stat().st_mode) == 0o640
