@@ -26,8 +26,9 @@ PROMOTED_SCHEMA = "quirq-toolchains-promoted/1"
 HEADER = """\
 # quirq infra (qq) manifest, schema {schema} (quirq-ai/sync), written by `qqsync init`. Tools read
 # it only through qqsync (`qqsync show` or the qqsync.manifest library), never another parser.
-# Change pins with `qqsync pin`; edit targets by hand. Each target is `cacheable = false` until
-# it lists its `srcs`: without them its inputs are unknown, so a cached result could be stale.
+# Change pins with `qqsync pin`; edit targets by hand. Each target starts `cacheable = false`:
+# without `srcs` its inputs are unknown, so a cached result could be stale. Once a target lists its
+# `srcs`, delete that line.
 """
 PINS_NOTE = """\
 # The toolchain pins are the ones quirq-ai/toolchains promoted: `source` names the OCI image
@@ -167,7 +168,8 @@ def _write_new(dest: Path, text: str) -> None:
     """Write `dest` whole, never replacing a file there. A temp file is hard-linked into place, so
     readers never see half a manifest; where the file system has no hard links, an exclusive create.
     Files are created with mode 0o666 and the kernel applies the umask."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_BINARY", 0))  # no CRLF translation on Windows
     tmp = dest.parent / f".repo.toml.{secrets.token_hex(8)}.part"
     fd = os.open(tmp, flags, 0o666)
     try:
