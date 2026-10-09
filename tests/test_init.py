@@ -40,7 +40,7 @@ def test_init_then_validate_passes(tmp_path, capsys, kinds, fixture, toolchain):
     assert list(made["toolchains"]) == [toolchain]
     assert made["toolchains"] == {toolchain: onboarded["toolchains"][toolchain]}
     assert made["qq"] == {"version": "0.1.0"}
-    assert [(t["name"], t["kind"]) for t in made["targets"]] == [(k, k) for k in kinds]
+    assert [(t["name"], t["kind"], t["cacheable"]) for t in made["targets"]] == [(k, k, False) for k in sorted(kinds)]
     assert _leftovers(tmp_path) == []
 
 
@@ -226,7 +226,7 @@ def test_refuses_directory_at_manifest_path(tmp_path):
 def test_write_failure_is_an_error_and_leaves_nothing(tmp_path, monkeypatch):
     def fail(*args, **kwargs):
         raise PermissionError(13, "Permission denied")
-    monkeypatch.setattr("qqsync.init.tempfile.mkstemp", fail)
+    monkeypatch.setattr("qqsync.init._write_new", fail)
     with pytest.raises(InitError, match="cannot write: Permission denied"):
         _init(tmp_path, ["node-app"])
     assert not (tmp_path / "infra").exists()
@@ -261,3 +261,115 @@ def test_mode_follows_umask(tmp_path):
     finally:
         os.umask(old)
     assert stat.S_IMODE(dest.stat().st_mode) == 0o640
+
+
+def test_kind_order_does_not_change_the_bytes():
+    assert render(["pytest", "python-service"], KINDS, PROMOTED, "0.1.0") == \
+        render(["python-service", "pytest"], KINDS, PROMOTED, "0.1.0")
+
+
+def test_pins_note_only_with_pins():
+    assert "promoted" in render(["node-app"], KINDS, PROMOTED, "0.1.0")
+    assert "promoted" not in render(["static-docs"], KINDS, PROMOTED, "0.1.0")
+
+
+def test_interrupt_leaves_nothing(tmp_path, monkeypatch):
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr("qqsync.init._write_new", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        _init(tmp_path, ["node-app"])
+    assert not (tmp_path / "infra").exists()
+
+
+def test_failed_temp_cleanup_after_link_is_still_success(tmp_path, monkeypatch):
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if ".part" in str(path):
+            real_unlink(path)
+            raise FileNotFoundError(errno.ENOENT, "No such file or directory")
+        return real_unlink(path, *args, **kwargs)
+    monkeypatch.setattr("qqsync.init.os.unlink", unlink)
+    dest = _init(tmp_path, ["node-app"])
+    assert dest.read_text() == render(["node-app"], KINDS, PROMOTED, "0.1.0")
+
+
+def test_infra_made_meanwhile_is_used(tmp_path, monkeypatch):
+    real_mkdir = Path.mkdir
+
+    def racing_mkdir(self, *args, **kwargs):
+        real_mkdir(self)
+        raise FileExistsError(errno.EEXIST, "File exists")
+    monkeypatch.setattr(Path, "mkdir", racing_mkdir)
+    assert _init(tmp_path, ["node-app"]).is_file()
+
+
+def test_refuses_kinds_file_without_kinds(tmp_path):
+    with pytest.raises(InitError, match="lists no \\[\\[kind\\]\\] entries"):
+        _init(tmp_path, ["node-app"], kinds_file=PROMOTED)
+
+
+def _node_block():
+    text = PROMOTED.read_text()
+    start = text.index("[[toolchain]]", text.index('name = "node"') - 40)
+    end = text.find("[[toolchain]]", start + 1)
+    return text, text[start:end if end != -1 else len(text)]
+
+
+def test_refuses_toolchain_promoted_at_two_versions(tmp_path):
+    text, node = _node_block()
+    promoted = tmp_path / "promoted.toml"
+    promoted.write_text(text + "\n" + node.replace('version = "24.21.0"', 'version = "25.0.0"')
+                        .replace('"linux-x86_64"', '"darwin-arm64"'))
+    with pytest.raises(InitError, match="promoted at two versions"):
+        _init(tmp_path, ["node-app"], promoted=promoted)
+
+
+def test_refuses_two_pins_for_one_platform(tmp_path):
+    text, node = _node_block()
+    promoted = tmp_path / "promoted.toml"
+    promoted.write_text(text + "\n" + node)
+    with pytest.raises(InitError, match="two pins for linux-x86_64"):
+        _init(tmp_path, ["node-app"], promoted=promoted)
+
+
+def test_other_link_errors_are_reported(tmp_path, monkeypatch):
+    def broken_link(src, dst):
+        raise OSError(errno.EIO, "Input/output error")
+    monkeypatch.setattr("qqsync.init.os.link", broken_link)
+    with pytest.raises(InitError, match="cannot write: Input/output error"):
+        _init(tmp_path, ["node-app"])
+    assert not (tmp_path / "infra").exists()
+
+
+def test_fallback_refuses_a_manifest_that_appeared(tmp_path, monkeypatch):
+    def no_link(src, dst):
+        Path(dst).write_text("theirs\n")
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+    monkeypatch.setattr("qqsync.init.os.link", no_link)
+    with pytest.raises(InitError, match="already exists"):
+        _init(tmp_path, ["node-app"])
+    assert (tmp_path / "infra" / "repo.toml").read_text() == "theirs\n"
+    assert _leftovers(tmp_path) == []
+
+
+def test_fallback_write_failure_removes_the_half_file(tmp_path, monkeypatch):
+    def no_link(src, dst):
+        raise PermissionError(errno.EPERM, "Operation not permitted")
+    real_fdopen = os.fdopen
+    calls = []
+
+    def fdopen(fd, *args, **kwargs):
+        calls.append(fd)
+        f = real_fdopen(fd, *args, **kwargs)
+        if len(calls) == 2:  # the fallback's write
+            def full(_text):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            f.write = full
+        return f
+    monkeypatch.setattr("qqsync.init.os.link", no_link)
+    monkeypatch.setattr("qqsync.init.os.fdopen", fdopen)
+    with pytest.raises(InitError, match="No space left"):
+        _init(tmp_path, ["node-app"])
+    assert not (tmp_path / "infra").exists()

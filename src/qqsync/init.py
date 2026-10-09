@@ -10,10 +10,11 @@ the schema before it is written. An existing manifest is never replaced.
 """
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import re
-import tempfile
+import secrets
 import tomllib
 from pathlib import Path
 
@@ -23,10 +24,14 @@ from qqsync.schema import CURRENT
 
 PROMOTED_SCHEMA = "quirq-toolchains-promoted/1"
 HEADER = """\
-# quirq infra (qq) manifest, schema {schema} (quirq-ai/sync). Read and edit it only through qqsync
-# (`qqsync show`, `qqsync pin`, or the qqsync.manifest library); never parse it any other way.
-# Written by `qqsync init`. The toolchain pins are the ones quirq-ai/toolchains promoted: `source`
-# names the OCI image manifest and `digest` the layer in it. The toolchain roller moves them.
+# quirq infra (qq) manifest, schema {schema} (quirq-ai/sync), written by `qqsync init`. Tools read
+# it only through qqsync (`qqsync show` or the qqsync.manifest library), never another parser.
+# Change pins with `qqsync pin`; edit targets by hand. Each target is `cacheable = false` until
+# it lists its `srcs`: without them its inputs are unknown, so a cached result could be stale.
+"""
+PINS_NOTE = """\
+# The toolchain pins are the ones quirq-ai/toolchains promoted: `source` names the OCI image
+# manifest and `digest` the layer in it.
 """
 
 
@@ -126,15 +131,17 @@ def render(kinds: list[str], kinds_file: str | Path, promoted_file: str | Path, 
     names = sorted({t for t in toolchains if t})
     pins = _promoted_pins(promoted_file, names)
 
-    lines = [HEADER.format(schema=CURRENT) + f"schema = {_string(CURRENT)}", "",
+    header = HEADER.format(schema=CURRENT) + (PINS_NOTE if names else "")
+    lines = [header + f"schema = {_string(CURRENT)}", "",
              "[qq]", f"version = {_string(qq_version)}"]
     for name in names:
         lines += ["", f"[toolchains.{_key(name)}]", f"version = {_string(pins[name]['version'])}"]
         for platform, (source, digest) in sorted(pins[name]["platforms"].items()):
             lines.append(f"platforms.{_key(platform)} = "
                          f"{{ source = {_string(source)}, digest = {_string(digest)} }}")
-    for kind in kinds:
-        lines += ["", "[[targets]]", f"name = {_string(kind)}", f"kind = {_string(kind)}"]
+    for kind in sorted(kinds):  # sorted, so the order of --kind does not change the bytes
+        lines += ["", "[[targets]]", f"name = {_string(kind)}", f"kind = {_string(kind)}",
+                  "cacheable = false"]
     text = "\n".join(lines) + "\n"
     try:
         loads(text, source="the new manifest", known_kinds=kinds)
@@ -143,45 +150,63 @@ def render(kinds: list[str], kinds_file: str | Path, promoted_file: str | Path, 
     return text
 
 
+def _fsync_dir(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return  # some platforms cannot open a directory; the entry is still written
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _write_new(dest: Path, text: str) -> None:
     """Write `dest` whole, never replacing a file there. A temp file is hard-linked into place, so
-    readers never see half a manifest; where the file system has no hard links, an exclusive create."""
-    fd, tmp = tempfile.mkstemp(dir=dest.parent, prefix=".repo.toml.", suffix=".part")
+    readers never see half a manifest; where the file system has no hard links, an exclusive create.
+    Files are created with mode 0o666 and the kernel applies the umask."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    tmp = dest.parent / f".repo.toml.{secrets.token_hex(8)}.part"
+    fd = os.open(tmp, flags, 0o666)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        umask = os.umask(0)
-        os.umask(umask)
-        os.chmod(tmp, 0o666 & ~umask)
         try:
             os.link(tmp, dest)  # fails if the manifest appeared meanwhile: never replace one
-            return
+            linked = True
         except FileExistsError:
             raise InitError(f"{dest}: a manifest already exists; edit it with `qqsync pin` instead") from None
         except OSError as e:
             if e.errno not in (errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV):
                 raise
+            linked = False
     finally:
-        os.unlink(tmp)
-    try:
-        out = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o666)
-    except FileExistsError:
-        raise InitError(f"{dest}: a manifest already exists; edit it with `qqsync pin` instead") from None
-    try:
-        with os.fdopen(out, "w", encoding="utf-8", newline="\n") as f:
-            f.write(text)
-            f.flush()
-            os.fsync(f.fileno())
-    except BaseException:
-        os.unlink(dest)
-        raise
+        with contextlib.suppress(OSError):  # the manifest is in place even if this fails
+            os.unlink(tmp)
+    if not linked:
+        try:
+            out = os.open(dest, flags, 0o666)
+        except FileExistsError:
+            raise InitError(f"{dest}: a manifest already exists; edit it with `qqsync pin` instead") from None
+        try:
+            with os.fdopen(out, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+        except BaseException:
+            os.unlink(dest)
+            raise
+    _fsync_dir(dest.parent)
 
 
 def init(root: str | Path, kinds: list[str], kinds_file: str | Path, promoted_file: str | Path,
          qq_version: str) -> Path:
-    """Write `root`/infra/repo.toml. Refuses an existing manifest; writes nothing on any error."""
+    """Write `root`/infra/repo.toml. Refuses an existing manifest; writes nothing on any error.
+    A process killed outright mid-write can leave an `infra/.repo.toml.*.part` file; delete it."""
     root = Path(root)
     if not root.is_dir():
         raise InitError(f"{root}: not a directory")
@@ -193,21 +218,22 @@ def init(root: str | Path, kinds: list[str], kinds_file: str | Path, promoted_fi
     if os.path.lexists(dest):
         what = "a directory, not a manifest, is there" if dest.is_dir() else "a manifest already exists"
         raise InitError(f"{dest}: {what}; edit a manifest with `qqsync pin` instead")
-    made_infra = False
+    made_infra = done = False
     try:
-        if not infra.exists():
+        try:
             infra.mkdir()
             made_infra = True
+        except FileExistsError:  # made meanwhile, perhaps by another init: fine if a real directory
+            if infra.is_symlink() or not infra.is_dir():
+                raise InitError(f"{infra}: must be a directory in the repo, not a link or a file") from None
         _write_new(dest, text)
-    except (OSError, InitError) as e:
-        if made_infra:
-            try:
-                infra.rmdir()  # only if still empty: something else may have written there meanwhile
-            except OSError:
-                pass
-        if isinstance(e, InitError):
-            raise
+        done = True
+    except OSError as e:
         raise InitError(f"{dest}: cannot write: {e.strerror or e}") from None
+    finally:
+        if made_infra and not done:
+            with contextlib.suppress(OSError):
+                infra.rmdir()  # only if still empty: something else may have written there meanwhile
     return dest
 
 
