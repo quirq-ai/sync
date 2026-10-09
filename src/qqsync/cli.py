@@ -15,6 +15,9 @@
                                                    check a fetched file or checkout against its pin.
     qqsync guard [ROOT]                            fail if any file under ROOT parses repo.toml
                                                    outside qqsync (a presubmit for every repo).
+    qqsync init DIR --kind KIND [--kind KIND ...] --kinds KINDS_TOML --promoted PROMOTED_TOML
+                --qq-version V                     write DIR/infra/repo.toml for a new repo: one
+                                                   target per kind and the toolchains they need.
 
 PATH defaults to infra/repo.toml. Exit 1 on any problem, with every problem printed.
 """
@@ -27,6 +30,7 @@ import sys
 from qqsync import __version__
 from qqsync.errors import ManifestError
 from qqsync.guard import GuardError, scan
+from qqsync.init import InitError, init
 from qqsync.manifest import DEFAULT_PATH, PIN_SECTIONS, Manifest
 from qqsync.pins import PinError, fetch, find_pin, iter_pins, placeholders, verify_checkout, verify_file
 
@@ -99,6 +103,12 @@ def _guard(args: argparse.Namespace) -> int:
     return 1 if findings else 0
 
 
+def _init(args: argparse.Namespace) -> int:
+    dest = init(args.dir, args.kind, args.kinds, args.promoted, args.qq_version)
+    print(f"{dest}: written with target kinds {', '.join(args.kind)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="qqsync", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -152,9 +162,23 @@ def main(argv: list[str] | None = None) -> int:
                    help="skip these paths; only quirq-ai/sync itself uses this, for its own library")
     g.set_defaults(run=_guard)
 
+    i = sub.add_parser("init", help="write a new repo's manifest")
+    i.add_argument("dir", help="the repo's root; the manifest goes to DIR/infra/repo.toml")
+    i.add_argument("--kind", action="append", required=True,
+                   help="a target kind; repeat it. Each becomes one target named after its kind")
+    i.add_argument("--kinds", required=True, metavar="KINDS_TOML",
+                   help="infra-config's config/kinds.toml: the known kinds and the toolchain each needs")
+    i.add_argument("--promoted", required=True, metavar="PROMOTED_TOML",
+                   help="quirq-ai/toolchains' promoted.toml: the toolchain pins")
+    i.add_argument("--qq-version", required=True, help="the qq version the repo pins in [qq]")
+    i.set_defaults(run=_init)
+
     args = parser.parse_args(argv)
     try:
         return args.run(args)
+    except InitError as e:
+        print(f"qqsync init: {e}", file=sys.stderr)
+        return 1
     except PinError as e:
         print(e, file=sys.stderr)
         return 1
