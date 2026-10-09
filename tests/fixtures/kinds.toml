@@ -1,0 +1,34 @@
+# Test copy of quirq-ai/infra-config config/kinds.toml at b344eaf (kinds and their toolchains only).
+[[kind]]
+name = "python-service"
+phase = "year-one"
+capabilities = ["fetch", "build", "run", "deploy", "bench"]
+toolchain = "python"
+
+[[kind]]
+name = "pytest"
+phase = "year-one"
+capabilities = ["fetch", "test"]
+toolchain = "python"
+
+[[kind]]
+name = "node-app"        # Next.js apps managed with pnpm
+phase = "year-one"
+capabilities = ["fetch", "build", "test", "run", "deploy", "bench"]
+toolchain = "node"
+
+[[kind]]
+name = "gatsby-site"     # a Gatsby site managed with pnpm (quirq-ai/website)
+phase = "year-one"
+capabilities = ["fetch", "build", "test", "deploy"]
+toolchain = "node"
+
+[[kind]]
+name = "static-docs"
+phase = "year-one"
+capabilities = ["build", "deploy"]
+
+[[kind]]
+name = "container-image"
+phase = "later"          # settled: containers come later
+capabilities = ["build", "package", "deploy"]

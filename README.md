@@ -179,6 +179,29 @@ qqsync --version
 To install `qqsync` next to `qq` on your own machine, follow the qq guide:
 https://docs.quirq.dev/docs/qq.
 
+## Start a new repo: `qqsync init`
+
+```sh
+qqsync init . --kind python-service --kind pytest \
+  --kinds infra-config/config/kinds.toml \
+  --promoted toolchains/promoted.toml \
+  --qq-version 0.1.0
+qqsync validate infra/repo.toml --kind python-service --kind pytest
+```
+
+It writes `infra/repo.toml` with one target per kind (named after the kind, sorted), the
+toolchain pins those kinds need, and `[qq] version`. It never replaces an existing manifest; use
+`qqsync pin` to change pins. The same inputs give the same bytes, whatever the order of `--kind`.
+
+sync names no language or toolchain, so the data comes in as files:
+- `--kinds`: infra-config's `config/kinds.toml`, which says which toolchain each kind needs;
+- `--promoted`: quirq-ai/toolchains' `promoted.toml`, the pins it promoted;
+- `--qq-version`: the qq version the repo pins.
+
+The new targets have no `srcs`, `outs` or `deps` yet; add them by hand. Each starts as
+`cacheable = false`, because without `srcs` its inputs are unknown and a cached result could be
+stale; delete that line once the target lists its `srcs`.
+
 ## Develop
 
 ```sh
