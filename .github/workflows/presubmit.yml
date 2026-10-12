@@ -34,6 +34,32 @@ jobs:
           qqsync validate tests/fixtures/xo-space.repo.toml tests/fixtures/innernet.repo.toml $kinds
           qqsync pins --strict tests/fixtures/xo-space.repo.toml
           qqsync pins --strict tests/fixtures/innernet.repo.toml
+      - name: "qqsync init: a new manifest validates (python-service + pytest, and node-app)"
+        run: |
+          d=$(mktemp -d)
+          mkdir "$d/py" "$d/node"
+          qqsync init "$d/py" --kind python-service --kind pytest --kinds .qq/infra-config/config/kinds.toml \
+            --promoted tests/fixtures/promoted.toml --qq-version 0.1.0
+          qqsync init "$d/node" --kind node-app --kinds .qq/infra-config/config/kinds.toml \
+            --promoted tests/fixtures/promoted.toml --qq-version 0.1.0
+          qqsync validate "$d/py/infra/repo.toml" --kind python-service --kind pytest
+          qqsync validate "$d/node/infra/repo.toml" --kind node-app
+          qqsync pins --strict "$d/py/infra/repo.toml"
+          qqsync pins --strict "$d/node/infra/repo.toml"
+          for want in "py python" "node node"; do
+            set -- $want
+            got=$(qqsync show "$d/$1/infra/repo.toml" | python -c "import json, sys; print(' '.join(json.load(sys.stdin).get('toolchains', {})))")
+            if [ "$got" != "$2" ]; then echo "::error::init for $1 pinned toolchains '$got', not '$2'"; exit 1; fi
+          done
+          set +e
+          qqsync init "$d/node" --kind node-app --kinds .qq/infra-config/config/kinds.toml \
+            --promoted tests/fixtures/promoted.toml --qq-version 0.1.0 2> "$d/err"
+          code=$?
+          set -e
+          cat "$d/err"
+          if [ "$code" -ne 1 ] || ! grep -q 'a manifest already exists' "$d/err"; then
+            echo "::error::init did not refuse an existing manifest (exit $code)"; exit 1
+          fi
       - name: "V0-SYN-03 done-when: a fetched artifact that does not match its pin fails the build"
         run: |
           d=$(mktemp -d)
