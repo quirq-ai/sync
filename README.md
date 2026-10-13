@@ -202,6 +202,42 @@ The new targets have no `srcs`, `outs` or `deps` yet; add them by hand. Each sta
 `cacheable = false`, because without `srcs` its inputs are unknown and a cached result could be
 stale; delete that line once the target lists its `srcs`.
 
+## Working clones: `qqsync project`
+
+The manifest's pins are read-only copies at fixed commits. A project is the other kind of sync: a
+clone someone edits, which follows a branch. `qqsync project` keeps such clones up to date and
+manages who has access to their repo. It reads no manifest, so it works on any git repo. In qq the
+same commands are `qq sync project ...`; bare `qq sync` is unchanged.
+
+```sh
+qqsync project                    # fetch, then bring each clone up to date with its strategy
+qqsync project --fetch-only       # download new commits; leave the working files alone
+qqsync project check              # is each clone behind its remote? changes nothing
+qqsync project add URL [NAME]     # clone a repo into --root
+qqsync project members            # who has access to this clone's repo, and who is invited
+qqsync project invite USER        # give USER access
+qqsync project revoke USER        # remove USER's access, or cancel their invitation
+```
+
+`--root DIR` is one clone or a folder whose direct children are clones (default: where you are).
+`--branch NAME` follows that branch instead of the one checked out. `--json` prints one JSON
+document; an error is `{"error": {"code": ..., "message": ...}}`. Exit codes: 0 done; 1 refused;
+2 could not run; 3 from `check` only, when at least one clone has updates to receive.
+
+What "up to date" means is a strategy: a module in `qqsync/project/strategies/` with one function,
+`apply(clone, branch)`. The default, `ff-only`, fast-forwards or refuses; it never merges, rewrites
+history or discards local work. A refusal leaves the clone as it was and says why, with a code a
+caller can act on: `diverged`, `local-changes`, `untracked-in-the-way`, `unfinished`, `locked`, or
+`other-branch` when another branch than the one to follow is checked out. A clone's strategy is recorded on that machine only
+(`git config qqsync.strategy NAME`), so a shared project cannot choose the code that runs on
+someone else's machine.
+
+`members`, `invite` and `revoke` act on the repo the clone's origin names, through a code host
+backend in `qqsync/project/backends/`. The one backend today is GitHub, through the `gh` command
+line: access is the repo's collaborators, and an invitation gives no access until it is accepted.
+TODO(suraj): qq already wraps `gh` in its own `backends/github.py`; say if this backend should
+live there instead.
+
 ## Develop
 
 ```sh

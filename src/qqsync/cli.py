@@ -18,6 +18,9 @@
     qqsync init DIR --kind KIND [--kind KIND ...] --kinds KINDS_TOML --promoted PROMOTED_TOML
                 --qq-version V                     write DIR/infra/repo.toml for a new repo: one
                                                    target per kind and the toolchains they need.
+    qqsync project [COMMAND]                       keep working clones up to date and manage who
+                                                   has access; reads no manifest. See
+                                                   qqsync project --help for its commands and exit codes.
 
 PATH defaults to infra/repo.toml. Exit 1 on any problem, with every problem printed.
 """
@@ -33,6 +36,7 @@ from qqsync.guard import GuardError, scan
 from qqsync.init import InitError, init
 from qqsync.manifest import DEFAULT_PATH, PIN_SECTIONS, Manifest
 from qqsync.pins import PinError, fetch, find_pin, iter_pins, placeholders, verify_checkout, verify_file
+from qqsync.project import cli as project
 
 
 def _validate(args: argparse.Namespace) -> int:
@@ -172,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="quirq-ai/toolchains' promoted.toml: the toolchain pins")
     i.add_argument("--qq-version", required=True, help="the qq version the repo pins in [qq]")
     i.set_defaults(run=_init)
+
+    project.register(sub)
 
     args = parser.parse_args(argv)
     try:
